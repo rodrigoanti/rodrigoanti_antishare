@@ -1,0 +1,32 @@
+{
+  "name": "antishare",
+  "version": "0.1.0",
+  "description": "AntiShare — LAN mesh folder sharing (Electron + TypeScript)",
+  "main": "./out/main/index.js",
+  "author": "AntiShare",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win portable --x64"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "electron-vite": "^2.3.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/busboy": "^1.5.4",
+    "@types/node": "^20.14.10",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^31.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.5"
+  }
+}

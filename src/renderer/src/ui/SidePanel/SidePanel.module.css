@@ -1,0 +1,115 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+  display: flex;
+  align-items: stretch;
+  z-index: 1000;
+  animation: fadeIn 0.2s var(--ease-out) both;
+}
+
+.side-right {
+  justify-content: flex-end;
+}
+
+.side-left {
+  justify-content: flex-start;
+}
+
+.panel {
+  background: var(--color-surface);
+  border-radius: 0;
+  box-shadow: var(--shadow-float);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.side-right .panel {
+  animation: slideInRight 0.35s var(--ease-out-expo) both;
+}
+
+.side-left .panel {
+  animation: slideInLeft 0.35s var(--ease-out-expo) both;
+}
+
+.size-sm {
+  width: min(100%, 400px);
+}
+
+.size-md {
+  width: min(100%, 520px);
+}
+
+.size-lg {
+  width: min(100%, 720px);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-lg);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+  line-height: 1;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.close:hover {
+  color: var(--color-text);
+  background: var(--color-bg-subtle);
+}
+
+.body {
+  flex: 1;
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+.footer {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.footer-row {
+  flex-direction: row;
+  justify-content: flex-end;
+}
+
+.footer-column {
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .panel {
+    animation: none;
+  }
+}

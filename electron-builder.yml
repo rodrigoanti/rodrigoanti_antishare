@@ -1,0 +1,23 @@
+appId: com.antishare.app
+productName: AntiShare
+copyright: Copyright © AntiShare
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - resources/drag-icon.png
+asar: true
+extraResources:
+  - from: resources/drag-icon.png
+    to: drag-icon.png
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: AntiShare-${version}-win-${arch}-portable.${ext}
+portable:
+  artifactName: AntiShare-${version}-win-${arch}-portable.${ext}
+npmRebuild: false
