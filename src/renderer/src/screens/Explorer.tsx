@@ -59,6 +59,9 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
   const hasLoadedOnce = useRef(false)
+  const silentFailStreak = useRef(0)
+  /** True while listing fails — poll every 2s until a success, then back to 5s. */
+  const connectionUnstable = useRef(false)
   const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
     new Map()
   )
@@ -95,8 +98,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   }, [path])
 
   const load = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      if (!target || !tokenReady) return
+    async (opts?: { silent?: boolean }): Promise<boolean> => {
+      if (!target || !tokenReady) return false
       const silent = opts?.silent === true
       if (!silent) {
         setLoading(true)
@@ -108,36 +111,59 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
         token: token.trim() || undefined
       })
       if (!result.ok) {
+        connectionUnstable.current = true
         if (!silent) {
+          silentFailStreak.current = 0
           setEntries([])
           setError(mapIpcError(result.error, 'No se pudo listar el directorio.'))
         } else {
-          setError(mapIpcError(result.error, 'No se pudo actualizar el directorio.'))
+          silentFailStreak.current += 1
+          if (silentFailStreak.current >= 2) {
+            setError(mapIpcError(result.error, 'No se pudo actualizar el directorio.'))
+          }
         }
-      } else {
-        const sorted = [...(result.entries ?? [])].sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-          return a.name.localeCompare(b.name, 'es')
-        })
-        setEntries(sorted)
-        setError(null)
-        hasLoadedOnce.current = true
+        if (!silent) setLoading(false)
+        return false
       }
+      const sorted = [...(result.entries ?? [])].sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+        return a.name.localeCompare(b.name, 'es')
+      })
+      setEntries(sorted)
+      setError(null)
+      silentFailStreak.current = 0
+      connectionUnstable.current = false
+      hasLoadedOnce.current = true
       if (!silent) setLoading(false)
+      return true
     },
     [api, path, target, token, tokenReady]
   )
 
   useEffect(() => {
     hasLoadedOnce.current = false
-    void load({ silent: false })
-  }, [load])
+    silentFailStreak.current = 0
+    connectionUnstable.current = false
 
-  useEffect(() => {
     if (!target || !tokenReady) return
-    const id = window.setInterval(() => void load({ silent: true }), 5000)
-    return () => window.clearInterval(id)
-  }, [target, tokenReady, load])
+
+    let cancelled = false
+    let timer: number | undefined
+
+    const run = async (silent: boolean): Promise<void> => {
+      if (cancelled) return
+      await load({ silent })
+      if (cancelled) return
+      const delay = connectionUnstable.current ? 2_000 : 5_000
+      timer = window.setTimeout(() => void run(true), delay)
+    }
+
+    void run(false)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [load, target, tokenReady])
 
   async function downloadFile(entry: DirEntry): Promise<void> {
     if (!target) return

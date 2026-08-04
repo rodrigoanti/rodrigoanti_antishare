@@ -13,8 +13,62 @@ import type {
   RemoteUploadResult
 } from '../shared/types'
 
+const LIST_TIMEOUT_MS = 8_000
+const TRANSFER_TIMEOUT_MS = 120_000
+
 function authHeaders(token?: string): Record<string, string> {
   return token ? { 'X-Share-Token': token } : {}
+}
+
+function isRetryableNetworkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  const cause =
+    err instanceof Error && err.cause instanceof Error
+      ? err.cause.message.toLowerCase()
+      : err instanceof Error && err.cause
+        ? String(err.cause).toLowerCase()
+        : ''
+  const hay = `${msg} ${cause}`
+  return (
+    hay.includes('fetch failed') ||
+    hay.includes('econnreset') ||
+    hay.includes('econnrefused') ||
+    hay.includes('econnaborted') ||
+    hay.includes('epipe') ||
+    hay.includes('socket') ||
+    hay.includes('network') ||
+    hay.includes('und_err') ||
+    hay.includes('other side closed') ||
+    hay.includes('aborted') ||
+    hay.includes('timeout')
+  )
+}
+
+/** LAN peer fetch with timeout; one retry on stale keep-alive / reset races. */
+async function peerFetch(
+  url: string,
+  init: RequestInit & { timeoutMs?: number; retries?: number } = {}
+): Promise<Response> {
+  const { timeoutMs = LIST_TIMEOUT_MS, retries = 1, headers, ...rest } = init
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, {
+        ...rest,
+        cache: 'no-store',
+        headers: {
+          Connection: 'close',
+          ...(headers as Record<string, string> | undefined)
+        },
+        signal: AbortSignal.timeout(timeoutMs)
+      })
+    } catch (e) {
+      lastError = e
+      if (attempt >= retries || !isRetryableNetworkError(e)) throw e
+      await new Promise((r) => setTimeout(r, 150 + attempt * 200))
+    }
+  }
+  throw lastError
 }
 
 /** Pick a free path in dir: name, name (1).ext, name (2).ext, … (win32 + posix safe). */
@@ -44,7 +98,11 @@ export async function remoteList(req: RemoteListRequest): Promise<RemoteListResu
     const base = req.baseUrl.replace(/\/$/, '')
     const path = req.path || ''
     const url = `${base}/api/list?path=${encodeURIComponent(path)}`
-    const res = await fetch(url, { headers: authHeaders(req.token) })
+    const res = await peerFetch(url, {
+      headers: authHeaders(req.token),
+      timeoutMs: LIST_TIMEOUT_MS,
+      retries: 1
+    })
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string }
       return {
@@ -69,7 +127,11 @@ export async function remoteDownload(req: RemoteDownloadRequest): Promise<Remote
     }
     const base = req.baseUrl.replace(/\/$/, '')
     const url = `${base}/api/download?path=${encodeURIComponent(req.path)}`
-    const res = await fetch(url, { headers: authHeaders(req.token) })
+    const res = await peerFetch(url, {
+      headers: authHeaders(req.token),
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      retries: 1
+    })
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string }
       return {
@@ -119,14 +181,16 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
     })
     const body = Buffer.concat([preamble, fileBuf, epilogue])
 
-    const res = await fetch(url, {
+    const res = await peerFetch(url, {
       method: 'POST',
       headers: {
         ...authHeaders(req.token),
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
         'Content-Length': String(body.length)
       },
-      body
+      body,
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      retries: 1
     })
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string }

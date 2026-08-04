@@ -151,7 +151,8 @@ export interface PeerAnnouncement {
 export const DEFAULT_SHARE_PORT = 8765
 export const DISCOVERY_PORT = 8766
 export const DISCOVERY_MAGIC = 'antishare-v1'
-export const PEER_STALE_MS = 10_000
+/** Drop UDP-discovered peers if no announce arrives within this window (announce ~2s). */
+export const PEER_STALE_MS = 25_000
 
 /** OS drag-out (Electron startDrag). Files only. */
 export interface StartDragLocalRequest {

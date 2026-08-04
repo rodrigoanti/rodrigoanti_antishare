@@ -27,7 +27,7 @@ interface HomeProps {
 
 function isFresh(peer: Peer): boolean {
   if (!peer.lastSeen) return true
-  return Date.now() - peer.lastSeen < 12_000
+  return Date.now() - peer.lastSeen < 30_000
 }
 
 function joinPath(parent: string, name: string): string {
@@ -76,6 +76,9 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [dragBusyPath, setDragBusyPath] = useState<string | null>(null)
   const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
   const hasLoadedOnce = useRef(false)
+  const silentFailStreak = useRef(0)
+  /** True while listing fails — poll every 2s until a success, then back to 5s. */
+  const connectionUnstable = useRef(false)
   const tokenInputRef = useRef<HTMLInputElement>(null)
   /** Remote drag: absolute path from prepareDrag, keyed by entry.path */
   const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
@@ -128,7 +131,28 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     }
     void loadPeers()
     const unsub = api.onPeersUpdate((next) => {
-      if (alive) setPeers(next)
+      if (!alive) return
+      setPeers(next)
+      // Keep open explorer pointed at the live announce (IP can change on Wi‑Fi renew).
+      setNav((prev) => {
+        if (prev.kind !== 'peer') return prev
+        const match = next.find(
+          (p) =>
+            p.baseUrl === prev.peer.baseUrl ||
+            (p.port === prev.peer.port &&
+              (p.name === prev.peer.name || p.host === prev.peer.host))
+        )
+        if (!match) return prev
+        if (
+          match.baseUrl === prev.peer.baseUrl &&
+          match.host === prev.peer.host &&
+          match.name === prev.peer.name &&
+          match.tokenRequired === prev.peer.tokenRequired
+        ) {
+          return prev
+        }
+        return { ...prev, peer: match }
+      })
     })
     return () => {
       alive = false
@@ -137,12 +161,14 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   }, [api])
 
   const loadContents = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean }): Promise<boolean> => {
       if (nav.kind === 'root') {
         setEntries([])
         setLoading(false)
         hasLoadedOnce.current = true
-        return
+        silentFailStreak.current = 0
+        connectionUnstable.current = false
+        return true
       }
       const silent = opts?.silent === true
       if (!silent) {
@@ -155,7 +181,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           setEntries([])
           setError('Todavía no estás compartiendo.')
           setLoading(false)
-          return
+          connectionUnstable.current = true
+          return false
         }
         result = await api.listLocal({ path: nav.path || undefined })
       } else {
@@ -166,38 +193,65 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         })
       }
       if (!result.ok) {
+        connectionUnstable.current = true
         if (!silent) {
+          silentFailStreak.current = 0
           setEntries([])
           setError(mapIpcError(result.error, 'No se pudo listar el contenido.'))
         } else {
-          setError(mapIpcError(result.error, 'No se pudo actualizar.'))
+          // Transient LAN / keep-alive races: keep last listing; only surface after streaks.
+          silentFailStreak.current += 1
+          if (silentFailStreak.current >= 2) {
+            setError(mapIpcError(result.error, 'No se pudo actualizar.'))
+          }
         }
-      } else {
-        const sorted = [...(result.entries ?? [])].sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-          return a.name.localeCompare(b.name, 'es')
-        })
-        setEntries(sorted)
-        setError(null)
-        hasLoadedOnce.current = true
+        if (!silent) setLoading(false)
+        return false
       }
+      const sorted = [...(result.entries ?? [])].sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+        return a.name.localeCompare(b.name, 'es')
+      })
+      setEntries(sorted)
+      setError(null)
+      silentFailStreak.current = 0
+      connectionUnstable.current = false
+      hasLoadedOnce.current = true
       if (!silent) setLoading(false)
+      return true
     },
     [api, nav, running]
   )
 
   useEffect(() => {
     hasLoadedOnce.current = false
+    silentFailStreak.current = 0
+    connectionUnstable.current = false
     setSelectedKey(null)
     preparedDragRef.current.clear()
-    void loadContents({ silent: false })
-  }, [loadContents])
 
-  useEffect(() => {
-    if (nav.kind === 'root') return
-    const id = window.setInterval(() => void loadContents({ silent: true }), 5000)
-    return () => window.clearInterval(id)
-  }, [nav, loadContents])
+    if (nav.kind === 'root') {
+      void loadContents({ silent: false })
+      return
+    }
+
+    let cancelled = false
+    let timer: number | undefined
+
+    const run = async (silent: boolean): Promise<void> => {
+      if (cancelled) return
+      await loadContents({ silent })
+      if (cancelled) return
+      const delay = connectionUnstable.current ? 2_000 : 5_000
+      timer = window.setTimeout(() => void run(true), delay)
+    }
+
+    void run(false)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [loadContents, nav.kind])
 
   const crumbs = useMemo(() => {
     const items: { label: string; go: () => void }[] = [

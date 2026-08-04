@@ -118,7 +118,7 @@ Shared types: `src/shared/types.ts` (for Frontend).
 - Targets: multicast `239.255.76.67`, `255.255.255.255`, and per-iface subnet broadcast (`x.x.x.255`) on port **8766**
 - Self-filter: same **local IP and share port** only — remote peers may use the same port number
 - Manual join: `window.antishare.addManualPeer({ host, port })` probes `GET /api/list` and upserts the peer
-- Stale UDP peers drop after ~10s; manual peers stay until `removeManualPeer`
+- Stale UDP peers drop after ~25s; manual peers stay until `removeManualPeer`
 
 **Firewall:** both machines should allow AntiShare (UDP **8766** discovery, TCP share port e.g. **8765**). On Windows, allow the app through the firewall when prompted.
 

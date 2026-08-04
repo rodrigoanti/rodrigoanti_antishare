@@ -9,7 +9,7 @@ interface MachinesProps {
 
 function isFresh(peer: Peer): boolean {
   if (!peer.lastSeen) return true
-  return Date.now() - peer.lastSeen < 12_000
+  return Date.now() - peer.lastSeen < 30_000
 }
 
 export function Machines({ onOpenPeer }: MachinesProps): ReactElement {

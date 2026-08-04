@@ -367,6 +367,12 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
     }
   })
 
+  // Default keepAliveTimeout is 5s; AntiShare clients poll ~every 5s and Node fetch
+  // (undici) will reuse sockets the server already closed → intermittent "fetch failed"
+  // until process restart. Keep idle sockets longer than the UI poll interval.
+  server.keepAliveTimeout = 75_000
+  server.headersTimeout = 80_000
+
   await new Promise<void>((resolveListen, reject) => {
     server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
