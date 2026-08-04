@@ -16,21 +16,25 @@ npm install
 npm run dev
 ```
 
-Scripts: `dev` · `build` · `start` (preview) · `dist:win` (Windows portable)
+Scripts: `dev` · `build` · `start` (preview) · `dist:win` (Windows NSIS installer) · `dist:win:portable`
 
-## Windows portable build
+## Windows installer
 
-Produces a single portable `.exe` (no installer) under `dist/`.
+Produces an NSIS setup `.exe` under `dist/` (desktop + Start Menu shortcuts).
 
 ```bash
 npm install
 npm run dist:win
 ```
 
-Artifact: `dist/AntiShare-<version>-win-x64-portable.exe` — copy and run; no install required.
+Artifact: `dist/AntiShare-<version>-win-x64-setup.exe`
+
+Portable (no install): `npm run dist:win:portable` → `dist/AntiShare-<version>-win-x64-portable.exe`
+
+App icon: `build/icon.ico` / `build/icon.png` (blue folder matching the in-app Finder icons).
 
 Config: `electron-builder.yml` (`appId` `com.antishare.app`, packages `out/` from electron-vite).  
-`dist:win` forces `--x64` (typical Windows PCs). Cross-build from macOS needs Wine for the portable/NSIS step (`brew install wine-stable` or equivalent). Signing is optional (`CSC_IDENTITY_AUTO_DISCOVERY=false` skips code signing).
+`dist:win` forces `--x64`. Signing is optional (`CSC_IDENTITY_AUTO_DISCOVERY=false` skips code signing).
 
 Generic pack: `npm run dist` (uses targets from `electron-builder.yml`).
 

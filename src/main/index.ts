@@ -1,13 +1,25 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { registerIpc, restoreAutoStart, shutdownShare } from './ipc'
 
+function resolveAppIcon(): string | undefined {
+  const candidates = [
+    join(process.resourcesPath, 'icon.png'),
+    join(__dirname, '../../build/icon.ico'),
+    join(__dirname, '../../build/icon.png')
+  ]
+  return candidates.find((p) => existsSync(p))
+}
+
 function createWindow(): void {
+  const icon = resolveAppIcon()
   const win = new BrowserWindow({
     width: 960,
     height: 680,
     show: false,
     title: 'AntiShare',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

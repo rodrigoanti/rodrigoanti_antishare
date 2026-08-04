@@ -10,7 +10,8 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win portable --x64"
+    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:win:portable": "npm run build && electron-builder --win portable --x64"
   },
   "dependencies": {
     "busboy": "^1.6.0",
