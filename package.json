@@ -15,6 +15,7 @@
     "smoke:peers": "tsx scripts/smoke-peers.ts",
     "smoke:drag": "tsx scripts/smoke-drag.ts",
     "smoke:import": "tsx scripts/smoke-import.ts",
+    "smoke:fsops": "tsx scripts/smoke-fsops.ts",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac dir --mac dmg",
     "dist:win": "npm run build && electron-builder --win nsis --x64",

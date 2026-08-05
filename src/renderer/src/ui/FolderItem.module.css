@@ -57,14 +57,8 @@
   position: absolute;
   right: 4px;
   bottom: 6px;
-  padding: 2px 6px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--color-text) 78%, transparent);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  display: grid;
+  place-items: center;
 }
 
 .iconLabel {
@@ -145,8 +139,27 @@
 
 .rowBadge {
   justify-self: end;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
+  display: grid;
+  place-items: center;
+}
+
+.renameInput {
+  width: 100%;
+  min-width: 0;
+  max-width: 96px;
+  margin: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--color-primary);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.row .renameInput {
+  max-width: none;
+  text-align: left;
+  font-size: var(--text-sm);
 }

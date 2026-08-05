@@ -11,7 +11,7 @@ import {
 import type { DirEntry, Peer, ShareStatus } from '../../../shared/types'
 import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
 import { isOsFileDrag, markInternalDrag, osDropPaths } from '../osDrop'
-import { Alert, Button, Input, Modal } from '../ui'
+import { Alert, Button, ContextMenu, Input, LockBadge, Modal } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
 import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
 
@@ -53,6 +53,14 @@ function formatMtime(ms: number): string {
   }
 }
 
+function uniqueNewFolderName(entries: DirEntry[]): string {
+  const used = new Set(entries.map((e) => e.name.toLowerCase()))
+  if (!used.has('carpeta nueva')) return 'Carpeta nueva'
+  let n = 2
+  while (used.has(`carpeta nueva ${n}`)) n += 1
+  return `Carpeta nueva ${n}`
+}
+
 function readViewMode(): FinderViewMode {
   try {
     const v = localStorage.getItem(VIEW_KEY)
@@ -81,6 +89,12 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [importing, setImporting] = useState(false)
   const [dropActive, setDropActive] = useState(false)
   const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
+  const [renameMode, setRenameMode] = useState<
+    { kind: 'existing'; path: string; value: string } | { kind: 'create'; value: string } | null
+  >(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: DirEntry } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<DirEntry | null>(null)
+  const [opBusy, setOpBusy] = useState(false)
   const hasLoadedOnce = useRef(false)
   const silentFailStreak = useRef(0)
   /** True while listing fails — poll every 2s until a success, then back to 5s. */
@@ -92,6 +106,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   )
   const suppressClickRef = useRef(false)
   const dropDepthRef = useRef(0)
+  const renameCommitLock = useRef(false)
 
   const running = status?.running ?? false
   const localLanHosts = useMemo(() => lanHostsFromShareUrls(status?.urls), [status?.urls])
@@ -251,6 +266,9 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     silentFailStreak.current = 0
     connectionUnstable.current = false
     setSelectedKey(null)
+    setRenameMode(null)
+    setMenu(null)
+    setPendingDelete(null)
     preparedDragRef.current.clear()
 
     if (nav.kind === 'root') {
@@ -320,6 +338,29 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     return items
   }, [nav])
 
+  useEffect(() => {
+    if (nav.kind === 'root') return
+    const onKey = (e: KeyboardEvent): void => {
+      if (renameMode || pendingDelete || pendingPeer || opBusy) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      const entry = entries.find((en) => en.path === selectedKey)
+      if (!entry) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        void openEntry(entry)
+      } else if (e.key === 'F2') {
+        e.preventDefault()
+        beginRename(entry)
+      } else if (e.key === 'Delete') {
+        e.preventDefault()
+        setPendingDelete(entry)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [nav.kind, renameMode, pendingDelete, pendingPeer, opBusy, entries, selectedKey])
+
   function openLocalRoot(): void {
     if (!running) {
       onOpenSettings()
@@ -356,6 +397,121 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     setTokenDraft('')
     setTokenError(null)
     openPeer(peer, value)
+  }
+
+  function cancelRename(): void {
+    renameCommitLock.current = false
+    setRenameMode(null)
+  }
+
+  function beginRename(entry: DirEntry): void {
+    renameCommitLock.current = false
+    setMenu(null)
+    setSelectedKey(entry.path)
+    setRenameMode({ kind: 'existing', path: entry.path, value: entry.name })
+  }
+
+  function startNewFolder(): void {
+    if (nav.kind === 'root' || opBusy) return
+    renameCommitLock.current = false
+    setMenu(null)
+    setPendingDelete(null)
+    setRenameMode({ kind: 'create', value: uniqueNewFolderName(entries) })
+  }
+
+  async function commitRename(): Promise<void> {
+    if (!renameMode || renameCommitLock.current || nav.kind === 'root') return
+    const name = renameMode.value.trim()
+    if (!name) {
+      cancelRename()
+      return
+    }
+    if (renameMode.kind === 'existing') {
+      const entry = entries.find((e) => e.path === renameMode.path)
+      if (!entry || name === entry.name) {
+        cancelRename()
+        return
+      }
+    }
+    renameCommitLock.current = true
+    setOpBusy(true)
+    setError(null)
+    try {
+      const result =
+        nav.kind === 'local'
+          ? renameMode.kind === 'create'
+            ? await api.mkdirLocal({ path: nav.path || undefined, name })
+            : await api.renameLocal({ path: renameMode.path, newName: name })
+          : renameMode.kind === 'create'
+            ? await api.remoteMkdir({
+                baseUrl: nav.peer.baseUrl,
+                path: nav.path || undefined,
+                name,
+                token: nav.token
+              })
+            : await api.remoteRename({
+                baseUrl: nav.peer.baseUrl,
+                path: renameMode.path,
+                newName: name,
+                token: nav.token
+              })
+      if (!result.ok) {
+        renameCommitLock.current = false
+        setError(
+          mapIpcError(
+            result.error,
+            renameMode.kind === 'create' ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.'
+          )
+        )
+        return
+      }
+      setRenameMode(null)
+      setSelectedKey(joinPath(nav.path, name))
+      await loadContents({ silent: true })
+    } catch (err) {
+      renameCommitLock.current = false
+      setError(
+        mapIpcError(
+          err instanceof Error ? err.message : String(err),
+          renameMode.kind === 'create' ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.'
+        )
+      )
+    } finally {
+      setOpBusy(false)
+    }
+  }
+
+  async function confirmDelete(): Promise<void> {
+    if (!pendingDelete || nav.kind === 'root') return
+    const entry = pendingDelete
+    setOpBusy(true)
+    setError(null)
+    try {
+      const result =
+        nav.kind === 'local'
+          ? await api.removeLocal({ path: entry.path })
+          : await api.remoteRemove({
+              baseUrl: nav.peer.baseUrl,
+              path: entry.path,
+              token: nav.token
+            })
+      if (!result.ok) {
+        setError(mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`))
+        return
+      }
+      setPendingDelete(null)
+      if (selectedKey === entry.path) setSelectedKey(null)
+      await loadContents({ silent: true })
+    } catch (err) {
+      setError(
+        mapIpcError(
+          err instanceof Error ? err.message : String(err),
+          `No se pudo eliminar «${entry.name}».`
+        )
+      )
+    } finally {
+      setOpBusy(false)
+    }
   }
 
   async function openEntry(entry: DirEntry): Promise<void> {
@@ -622,6 +778,14 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                 Importando…
               </span>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={startNewFolder}
+              disabled={opBusy || Boolean(renameMode)}
+            >
+              Nueva carpeta
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => void loadContents({ silent: false })}>
               Actualizar
             </Button>
@@ -651,7 +815,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                 kind="folder"
                 selected={selectedKey === 'local'}
                 status={localOnline ? 'En línea' : 'Sin compartir'}
-                badge={status?.tokenRequired ? 'Token' : undefined}
+                badge={status?.tokenRequired ? <LockBadge /> : undefined}
                 meta={localOnline ? 'Esta máquina' : 'Configurá para compartir'}
                 title={localOnline ? 'Abrir Mi carpeta' : 'Configurar carpeta'}
                 onClick={() => {
@@ -670,7 +834,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                     kind="folder"
                     selected={selectedKey === `peer:${peer.baseUrl}`}
                     status={online ? 'En línea' : 'Inactivo'}
-                    badge={peer.tokenRequired ? 'Token' : undefined}
+                    badge={peer.tokenRequired ? <LockBadge /> : undefined}
                     meta={`${peer.host}:${peer.port}`}
                     onClick={() => handlePeerClick(peer)}
                   />
@@ -695,7 +859,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           onDrop={handleOsDrop}
         >
           {showLoading && <div className="state-box">Cargando…</div>}
-          {!showLoading && viewMode === 'list' && entries.length > 0 && (
+          {!showLoading && viewMode === 'list' && (entries.length > 0 || renameMode?.kind === 'create') && (
             <div className="finder-list-head" aria-hidden="true">
               <span />
               <span>Nombre</span>
@@ -704,14 +868,29 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               <span />
             </div>
           )}
-          {!showLoading && entries.length === 0 && !error && (
+          {!showLoading && entries.length === 0 && !error && renameMode?.kind !== 'create' && (
             <div className="state-box empty">Esta carpeta está vacía.</div>
           )}
-          {!showLoading && entries.length > 0 && (
+          {!showLoading && (entries.length > 0 || renameMode?.kind === 'create') && (
             <ul
               className={viewMode === 'icons' ? 'finder-icons' : 'finder-list'}
               aria-label="Contenido"
             >
+              {renameMode?.kind === 'create' ? (
+                <li>
+                  <FolderItem
+                    viewMode={viewMode}
+                    name={renameMode.value}
+                    kind="folder"
+                    selected
+                    renaming
+                    renameValue={renameMode.value}
+                    onRenameChange={(value) => setRenameMode({ kind: 'create', value })}
+                    onRenameCommit={() => void commitRename()}
+                    onRenameCancel={cancelRename}
+                  />
+                </li>
+              ) : null}
               {entries.map((entry) => (
                 <li key={entry.path}>
                   <FolderItem
@@ -719,6 +898,17 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                     name={entry.isDir ? `${entry.name}` : entry.name}
                     kind={entry.isDir ? 'folder' : 'file'}
                     selected={selectedKey === entry.path}
+                    renaming={renameMode?.kind === 'existing' && renameMode.path === entry.path}
+                    renameValue={
+                      renameMode?.kind === 'existing' && renameMode.path === entry.path
+                        ? renameMode.value
+                        : undefined
+                    }
+                    onRenameChange={(value) =>
+                      setRenameMode({ kind: 'existing', path: entry.path, value })
+                    }
+                    onRenameCommit={() => void commitRename()}
+                    onRenameCancel={cancelRename}
                     status={
                       dragBusyPath === entry.path
                         ? 'Preparando…'
@@ -740,11 +930,17 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                         suppressClickRef.current = false
                         return
                       }
+                      if (renameMode) return
                       void openEntry(entry)
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setSelectedKey(entry.path)
+                      setMenu({ x: e.clientX, y: e.clientY, entry })
                     }}
                     onPointerDown={() => {
                       suppressClickRef.current = false
-                      prepareEntryDrag(entry)
+                      if (!renameMode) prepareEntryDrag(entry)
                     }}
                     onDragStart={(e) => handleEntryDragStart(entry, e)}
                   />
@@ -789,6 +985,58 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         </div>
       ) : null}
 
+      <ContextMenu
+        open={Boolean(menu)}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        onClose={() => setMenu(null)}
+        items={
+          menu
+            ? [
+                {
+                  id: 'open',
+                  label: 'Abrir',
+                  onSelect: () => void openEntry(menu.entry)
+                },
+                {
+                  id: 'rename',
+                  label: 'Renombrar',
+                  onSelect: () => beginRename(menu.entry)
+                },
+                {
+                  id: 'delete',
+                  label: 'Eliminar',
+                  danger: true,
+                  onSelect: () => setPendingDelete(menu.entry)
+                }
+              ]
+            : []
+        }
+      />
+
+      <Modal
+        open={Boolean(pendingDelete)}
+        onClose={() => {
+          if (!opBusy) setPendingDelete(null)
+        }}
+        title="Eliminar"
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" size="md" onClick={() => setPendingDelete(null)} disabled={opBusy}>
+              Cancelar
+            </Button>
+            <Button variant="danger" size="md" onClick={() => void confirmDelete()} loading={opBusy}>
+              Eliminar
+            </Button>
+          </>
+        }
+      >
+        <p className="panel-sub" style={{ margin: 0 }}>
+          {pendingDelete ? `¿Eliminar «${pendingDelete.name}»?` : null}
+        </p>
+      </Modal>
+
       <Modal
         open={Boolean(pendingPeer)}
         onClose={() => {
@@ -796,7 +1044,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           setTokenDraft('')
           setTokenError(null)
         }}
-        title="Clave requerida"
+        title="Clave"
         size="sm"
         footer={
           <>
@@ -822,7 +1070,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
             {pendingPeer ? `«${pendingPeer.name}» pide una clave para ver su carpeta.` : null}
           </p>
           <div className="field">
-            <label htmlFor="peer-token">Clave / token</label>
+            <label htmlFor="peer-token">Clave</label>
             <Input
               ref={tokenInputRef}
               id="peer-token"

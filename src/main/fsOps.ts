@@ -1,0 +1,176 @@
+/**
+ * mkdir / rename / remove inside a share root. All paths go through resolveSafe.
+ * Names cannot be empty or contain /, \\ or :. Never mutate the share root itself.
+ */
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, realpathSync } from 'fs'
+import { dirname, join, relative, sep } from 'path'
+import type { FsMkdirRequest, FsOpResult, FsRemoveRequest, FsRenameRequest } from '../shared/types'
+import { resolveSafe } from './pathSafe'
+
+export class FsOpError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'invalid' | 'exists' | 'notfound' | 'traversal' | 'forbidden'
+  ) {
+    super(message)
+    this.name = 'FsOpError'
+  }
+}
+
+export function assertEntryName(raw: string): string {
+  const name = String(raw ?? '').trim()
+  if (!name) throw new FsOpError('El nombre no puede estar vacío.', 'invalid')
+  if (/[/\\:]/.test(name) || name.includes('\0')) {
+    throw new FsOpError('El nombre no puede contener /, \\ ni :.', 'invalid')
+  }
+  if (name === '.' || name === '..') throw new FsOpError('Nombre inválido.', 'invalid')
+  return name
+}
+
+function posixRel(rel: string): string {
+  return String(rel || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+}
+
+function childRel(parentRel: string, name: string): string {
+  const p = posixRel(parentRel)
+  return p ? `${p}/${name}` : name
+}
+
+function rootReal(root: string): string {
+  try {
+    return realpathSync(root)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+}
+
+function isShareRoot(root: string, abs: string): boolean {
+  return abs === rootReal(root)
+}
+
+function wrap(fn: () => void): FsOpResult {
+  try {
+    fn()
+    return { ok: true }
+  } catch (e) {
+    if (e instanceof FsOpError) return { ok: false, error: e.message }
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.toLowerCase().includes('traversal')) {
+      return { ok: false, error: 'Ruta no permitida (path traversal bloqueado).' }
+    }
+    return { ok: false, error: msg }
+  }
+}
+
+function requireRoot(root: string | null): string {
+  if (!root) throw new FsOpError('No hay carpeta compartida configurada.', 'forbidden')
+  return root
+}
+
+/** Create a single directory. Fails if it already exists. Parent must exist. */
+export function mkdirInShare(root: string, parentRel: string, name: string): void {
+  const entry = assertEntryName(name)
+  let parentAbs: string
+  try {
+    parentAbs = resolveSafe(root, posixRel(parentRel) || '.')
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (!existsSync(parentAbs) || !statSync(parentAbs).isDirectory()) {
+    throw new FsOpError('La carpeta destino no existe.', 'notfound')
+  }
+  let destAbs: string
+  try {
+    destAbs = resolveSafe(root, childRel(parentRel, entry))
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (existsSync(destAbs)) {
+    throw new FsOpError('Ya existe un ítem con ese nombre.', 'exists')
+  }
+  mkdirSync(destAbs)
+}
+
+/** Rename a file or folder within the same parent. Does not overwrite. */
+export function renameInShare(root: string, relPath: string, newName: string): void {
+  const entry = assertEntryName(newName)
+  const rel = posixRel(relPath)
+  if (!rel || rel === '.') {
+    throw new FsOpError('No se puede renombrar la raíz del share.', 'forbidden')
+  }
+  let srcAbs: string
+  try {
+    srcAbs = resolveSafe(root, rel)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (!existsSync(srcAbs)) throw new FsOpError('No existe ese ítem.', 'notfound')
+  if (isShareRoot(root, srcAbs)) {
+    throw new FsOpError('No se puede renombrar la raíz del share.', 'forbidden')
+  }
+
+  const destAbs = join(dirname(srcAbs), entry)
+  let destSafe: string
+  try {
+    const destRel = relative(rootReal(root), destAbs).split(sep).join('/')
+    destSafe = resolveSafe(root, destRel)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (existsSync(destSafe)) {
+    try {
+      if (realpathSync(destSafe) !== srcAbs) {
+        throw new FsOpError('Ya existe un ítem con ese nombre.', 'exists')
+      }
+    } catch (e) {
+      if (e instanceof FsOpError) throw e
+      throw new FsOpError('Ya existe un ítem con ese nombre.', 'exists')
+    }
+  }
+  renameSync(srcAbs, destSafe)
+}
+
+/** Recursively delete a file or folder. Never deletes the share root. */
+export function removeInShare(root: string, relPath: string): void {
+  const rel = posixRel(relPath)
+  if (!rel || rel === '.') {
+    throw new FsOpError('No se puede eliminar la raíz del share.', 'forbidden')
+  }
+  let abs: string
+  try {
+    abs = resolveSafe(root, rel)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (!existsSync(abs)) throw new FsOpError('No existe ese ítem.', 'notfound')
+  if (isShareRoot(root, abs)) {
+    throw new FsOpError('No se puede eliminar la raíz del share.', 'forbidden')
+  }
+  rmSync(abs, { recursive: true, force: true })
+}
+
+export function mkdirLocal(root: string | null, req: FsMkdirRequest): FsOpResult {
+  return wrap(() => mkdirInShare(requireRoot(root), req.path || '', req.name))
+}
+
+export function renameLocal(root: string | null, req: FsRenameRequest): FsOpResult {
+  return wrap(() => renameInShare(requireRoot(root), req.path, req.newName))
+}
+
+export function removeLocal(root: string | null, req: FsRemoveRequest): FsOpResult {
+  return wrap(() => removeInShare(requireRoot(root), req.path))
+}
+
+export function httpStatusForFsError(err: unknown): number {
+  if (err instanceof FsOpError) {
+    if (err.code === 'traversal' || err.code === 'forbidden') return 403
+    if (err.code === 'exists') return 409
+    if (err.code === 'notfound') return 404
+    return 400
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  if (msg.toLowerCase().includes('traversal')) return 403
+  return 500
+}

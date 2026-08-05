@@ -10,11 +10,20 @@ import {
   readdirSync,
   statSync
 } from 'fs'
-import { dirname, join, normalize, relative, resolve, sep } from 'path'
+import { join, resolve, sep } from 'path'
 import { pipeline } from 'stream/promises'
 import Busboy from 'busboy'
 import type { DirEntry } from '../shared/types'
 import { buildShareUrls } from './net'
+import { isInsideRoot, resolveSafe } from './pathSafe'
+import {
+  httpStatusForFsError,
+  mkdirInShare,
+  removeInShare,
+  renameInShare
+} from './fsOps'
+
+export { resolveSafe } from './pathSafe'
 
 export interface ShareServerOptions {
   folder: string
@@ -44,88 +53,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function sendText(res: ServerResponse, status: number, text: string, type = 'text/plain; charset=utf-8'): void {
   res.writeHead(status, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(text) })
   res.end(text)
-}
-
-function isInsideRoot(rootReal: string, target: string): boolean {
-  const root = normalize(rootReal)
-  const abs = normalize(target)
-  if (abs === root) return true
-  const prefix = root.endsWith(sep) ? root : root + sep
-  return abs.startsWith(prefix)
-}
-
-function assertLogicalUnder(rootResolved: string, candidate: string): void {
-  const rel = relative(rootResolved, candidate)
-  if (rel.startsWith('..') || rel.split(sep).includes('..')) {
-    throw new Error('Path traversal blocked')
-  }
-  if (!isInsideRoot(rootResolved, candidate)) {
-    throw new Error('Path traversal blocked')
-  }
-}
-
-/**
- * Resolve path under share root. Blocks `..` and outbound symlinks
- * (realpath of target / nearest ancestor must stay under realpath(root)).
- */
-export function resolveSafe(root: string, relPath: string): string {
-  const rootResolved = resolve(root)
-  let rootReal: string
-  try {
-    rootReal = realpathSync(rootResolved)
-  } catch {
-    throw new Error('Path traversal blocked')
-  }
-
-  const cleaned = (relPath || '.').replace(/^\/+/, '')
-  const candidate = normalize(join(rootResolved, cleaned))
-  assertLogicalUnder(rootResolved, candidate)
-
-  if (existsSync(candidate)) {
-    let real: string
-    try {
-      real = realpathSync(candidate)
-    } catch {
-      throw new Error('Path traversal blocked')
-    }
-    if (!isInsideRoot(rootReal, real)) {
-      throw new Error('Path traversal blocked')
-    }
-    return real
-  }
-
-  // Not yet existing (e.g. upload): realpath nearest existing ancestor.
-  let ancestor = dirname(candidate)
-  while (!existsSync(ancestor)) {
-    const parent = dirname(ancestor)
-    if (parent === ancestor) break
-    ancestor = parent
-  }
-  if (!existsSync(ancestor)) {
-    throw new Error('Path traversal blocked')
-  }
-
-  let ancestorReal: string
-  try {
-    ancestorReal = realpathSync(ancestor)
-  } catch {
-    throw new Error('Path traversal blocked')
-  }
-  if (!isInsideRoot(rootReal, ancestorReal)) {
-    throw new Error('Path traversal blocked')
-  }
-
-  const suffix = relative(ancestor, candidate)
-  if (suffix.startsWith('..') || suffix.split(sep).includes('..')) {
-    throw new Error('Path traversal blocked')
-  }
-
-  const finalPath = suffix ? normalize(join(ancestorReal, suffix)) : ancestorReal
-  if (!isInsideRoot(rootReal, finalPath)) {
-    throw new Error('Path traversal blocked')
-  }
-
-  return finalPath
 }
 
 /** List directory under share root with symlink-safe resolveSafe. */
@@ -209,6 +136,26 @@ function escapeHtml(s: string): string {
 
 function parseQuery(url: string): URL {
   return new URL(url, 'http://localhost')
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  for await (const c of req) {
+    chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
+  }
+  if (chunks.length === 0) return {}
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (!raw) return {}
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('JSON inválido')
+  }
+  return parsed as Record<string, unknown>
+}
+
+function strField(body: Record<string, unknown>, key: string): string {
+  const v = body[key]
+  return typeof v === 'string' ? v : ''
 }
 
 async function handleUpload(
@@ -359,6 +306,42 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
           if (!res.headersSent) {
             sendJson(res, msg.includes('traversal') ? 403 : 500, { error: msg })
           }
+        }
+        return
+      }
+
+      if (method === 'POST' && pathname === '/api/mkdir') {
+        try {
+          const body = await readJsonBody(req)
+          mkdirInShare(root, strField(body, 'path'), strField(body, 'name'))
+          sendJson(res, 200, { ok: true })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (!res.headersSent) sendJson(res, httpStatusForFsError(e), { error: msg })
+        }
+        return
+      }
+
+      if (method === 'POST' && pathname === '/api/rename') {
+        try {
+          const body = await readJsonBody(req)
+          renameInShare(root, strField(body, 'path'), strField(body, 'newName'))
+          sendJson(res, 200, { ok: true })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (!res.headersSent) sendJson(res, httpStatusForFsError(e), { error: msg })
+        }
+        return
+      }
+
+      if (method === 'POST' && pathname === '/api/remove') {
+        try {
+          const body = await readJsonBody(req)
+          removeInShare(root, strField(body, 'path'))
+          sendJson(res, 200, { ok: true })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (!res.headersSent) sendJson(res, httpStatusForFsError(e), { error: msg })
         }
         return
       }

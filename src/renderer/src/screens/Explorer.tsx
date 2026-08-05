@@ -421,14 +421,14 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
           onSubmit={(e) => {
             e.preventDefault()
             if (!token.trim()) {
-              setError('Ingresá el token para continuar.')
+              setError('Ingresá la clave para continuar.')
               return
             }
             setTokenReady(true)
             setError(null)
           }}
         >
-          <label htmlFor="explorer-token">Este peer requiere token</label>
+          <label htmlFor="explorer-token">Este peer requiere clave</label>
           <div className="row">
             <Input
               id="explorer-token"
@@ -436,7 +436,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
               autoComplete="off"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="Token de acceso"
+              placeholder="Clave de acceso"
             />
             <Button type="submit" variant="primary" size="md">
               Conectar

@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactElement, ReactNode } from 'react'
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from 'react'
 import { FileIcon, FolderIcon } from './FolderIcon'
 import { cx } from './utils/cx'
 import styles from './FolderItem.module.css'
@@ -16,6 +16,11 @@ export interface FolderItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   sizeLabel?: string
   /** Visual cue while preparing remote drag */
   dragPreparing?: boolean
+  renaming?: boolean
+  renameValue?: string
+  onRenameChange?: (value: string) => void
+  onRenameCommit?: () => void
+  onRenameCancel?: () => void
 }
 
 export function FolderItem({
@@ -30,11 +35,63 @@ export function FolderItem({
   dragPreparing = false,
   draggable,
   onDragStart,
+  renaming = false,
+  renameValue,
+  onRenameChange,
+  onRenameCommit,
+  onRenameCancel,
   ...rest
 }: FolderItemProps): ReactElement {
-  const canDrag = onDragStart != null && draggable !== false
+  const canDrag = onDragStart != null && draggable !== false && !renaming
+  const renameRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!renaming) return
+    const el = renameRef.current
+    if (!el) return
+    el.focus()
+    el.select()
+  }, [renaming])
+
+  const renameField = (
+    <input
+      ref={renameRef}
+      className={styles.renameInput}
+      value={renameValue ?? name}
+      aria-label="Nuevo nombre"
+      onChange={(e) => onRenameChange?.(e.target.value)}
+      onBlur={() => onRenameCommit?.()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.stopPropagation()
+          onRenameCommit?.()
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          onRenameCancel?.()
+        }
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    />
+  )
 
   if (viewMode === 'list') {
+    if (renaming) {
+      return (
+        <div className={cx(styles.row, styles.selected)} role="group">
+          <span className={styles.rowIcon} aria-hidden="true">
+            {kind === 'folder' ? <FolderIcon width={28} height={23} /> : <FileIcon width={22} height={28} />}
+          </span>
+          {renameField}
+          <span className={styles.rowStatus}>{status ?? '—'}</span>
+          <span className={styles.rowMeta}>{meta ?? sizeLabel ?? '—'}</span>
+          <span className={styles.rowBadge} />
+        </div>
+      )
+    }
     return (
       <button
         type="button"
@@ -57,6 +114,17 @@ export function FolderItem({
         <span className={styles.rowMeta}>{meta ?? sizeLabel ?? '—'}</span>
         {badge ? <span className={styles.rowBadge}>{badge}</span> : <span className={styles.rowBadge} />}
       </button>
+    )
+  }
+
+  if (renaming) {
+    return (
+      <div className={cx(styles.iconItem, styles.selected)} role="group">
+        <span className={styles.iconArt} aria-hidden="true">
+          {kind === 'folder' ? <FolderIcon /> : <FileIcon />}
+        </span>
+        {renameField}
+      </div>
     )
   }
 

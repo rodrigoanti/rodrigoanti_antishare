@@ -144,6 +144,43 @@ export interface RemoteUploadResult {
   error?: string
 }
 
+export interface FsOpResult {
+  ok: boolean
+  error?: string
+}
+
+export interface FsMkdirRequest {
+  /** Relative parent folder inside the share (empty = root). */
+  path?: string
+  name: string
+}
+
+export interface FsRenameRequest {
+  /** Relative path of the file or folder to rename. */
+  path: string
+  newName: string
+}
+
+export interface FsRemoveRequest {
+  /** Relative path of the file or folder to delete. */
+  path: string
+}
+
+export interface RemoteFsMkdirRequest extends FsMkdirRequest {
+  baseUrl: string
+  token?: string
+}
+
+export interface RemoteFsRenameRequest extends FsRenameRequest {
+  baseUrl: string
+  token?: string
+}
+
+export interface RemoteFsRemoveRequest extends FsRemoveRequest {
+  baseUrl: string
+  token?: string
+}
+
 /** Drop-import absolute OS paths into the local share (files and folders). */
 export interface ImportLocalRequest {
   sources: string[]
@@ -254,5 +291,11 @@ export interface AntishareApi {
   importLocal: (req: ImportLocalRequest) => Promise<ImportLocalResult>
   /** Upload dropped OS files/folders (trees) to a remote peer. */
   importRemote: (req: RemoteImportRequest) => Promise<RemoteImportResult>
+  mkdirLocal: (req: FsMkdirRequest) => Promise<FsOpResult>
+  renameLocal: (req: FsRenameRequest) => Promise<FsOpResult>
+  removeLocal: (req: FsRemoveRequest) => Promise<FsOpResult>
+  remoteMkdir: (req: RemoteFsMkdirRequest) => Promise<FsOpResult>
+  remoteRename: (req: RemoteFsRenameRequest) => Promise<FsOpResult>
+  remoteRemove: (req: RemoteFsRemoveRequest) => Promise<FsOpResult>
   showItemInFolder: (filePath: string) => Promise<{ ok: boolean; error?: string }>
 }

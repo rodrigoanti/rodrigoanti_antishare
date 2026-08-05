@@ -13,7 +13,11 @@ import {
   type RemoteListRequest,
   type RemoteListResult,
   type RemoteUploadRequest,
-  type RemoteUploadResult
+  type RemoteUploadResult,
+  type FsOpResult,
+  type RemoteFsMkdirRequest,
+  type RemoteFsRenameRequest,
+  type RemoteFsRemoveRequest
 } from '../shared/types'
 import {
   getLanIPv4,
@@ -381,4 +385,51 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
       error: classifyPeerNetworkError(e, parseShareBase(req.baseUrl))
     }
   }
+}
+
+async function remoteFsPost(
+  baseUrl: string,
+  token: string | undefined,
+  endpoint: '/api/mkdir' | '/api/rename' | '/api/remove',
+  body: Record<string, string>
+): Promise<FsOpResult> {
+  try {
+    const base = baseUrl.replace(/\/$/, '')
+    const payload = Buffer.from(JSON.stringify(body), 'utf8')
+    const res = await peerHttp(`${base}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': String(payload.length)
+      },
+      body: payload,
+      timeoutMs: LIST_TIMEOUT_MS
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      return { ok: false, error: data.error || `HTTP ${res.status}` }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: classifyPeerNetworkError(e, parseShareBase(baseUrl)) }
+  }
+}
+
+export async function remoteMkdir(req: RemoteFsMkdirRequest): Promise<FsOpResult> {
+  return remoteFsPost(req.baseUrl, req.token, '/api/mkdir', {
+    path: req.path || '',
+    name: req.name
+  })
+}
+
+export async function remoteRename(req: RemoteFsRenameRequest): Promise<FsOpResult> {
+  return remoteFsPost(req.baseUrl, req.token, '/api/rename', {
+    path: req.path,
+    newName: req.newName
+  })
+}
+
+export async function remoteRemove(req: RemoteFsRemoveRequest): Promise<FsOpResult> {
+  return remoteFsPost(req.baseUrl, req.token, '/api/remove', { path: req.path })
 }

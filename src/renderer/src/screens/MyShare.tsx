@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { ShareStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
-import { Alert, Button, Input } from '../ui'
+import { Alert, Button, Input, LockBadge } from '../ui'
 import { NetworkStatus } from './NetworkStatus'
 
 function isLoopbackShareUrl(url: string): boolean {
@@ -195,7 +195,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
         </div>
 
         <div className="field">
-          <label htmlFor="token">Token (opcional)</label>
+          <label htmlFor="token">Clave (opcional)</label>
           <Input
             id="token"
             type="password"
@@ -238,7 +238,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       <div className="status-bar" role="status" aria-live="polite">
         <span className={`status-dot ${running ? 'on' : 'off'}`} aria-hidden="true" />
         <span className="status-label">{running ? 'En ejecución' : 'Detenido'}</span>
-        {status?.tokenRequired && <span className="badge">Token activo</span>}
+        {status?.tokenRequired ? <LockBadge /> : null}
       </div>
 
       {running && (

@@ -77,18 +77,10 @@
   background: var(--color-success);
 }
 
-.badge {
-  display: inline-flex;
-  width: fit-content;
-  padding: 4px 8px;
-  border-radius: var(--radius-pill);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  background: var(--color-bg-subtle);
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border-subtle);
+.lock {
+  position: absolute;
+  top: 10px;
+  right: 10px;
 }
 
 @media (max-width: 560px) {

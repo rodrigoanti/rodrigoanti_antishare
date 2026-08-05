@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, ReactElement } from 'react'
 import styles from './MachineCard.module.css'
 import { cx } from '../utils/cx'
+import { LockBadge } from '../LockBadge/LockBadge'
 
 export interface MachineCardProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className'> {
   name: string
@@ -28,7 +29,7 @@ export function MachineCard({
         <span className={cx(styles.dot, online && styles.dotOn)} aria-hidden="true" />
         {online ? 'En línea' : 'Inactivo'}
       </span>
-      {tokenRequired && <span className={styles.badge}>Token</span>}
+      {tokenRequired ? <LockBadge className={styles.lock} /> : null}
     </button>
   )
 }

@@ -42,6 +42,12 @@ function createStub(): AntishareApi {
     remoteUpload: async () => ({ ok: false, error: stubError('remoteUpload') }),
     importLocal: async () => ({ ok: false, error: stubError('importLocal') }),
     importRemote: async () => ({ ok: false, error: stubError('importRemote') }),
+    mkdirLocal: async () => ({ ok: false, error: stubError('mkdirLocal') }),
+    renameLocal: async () => ({ ok: false, error: stubError('renameLocal') }),
+    removeLocal: async () => ({ ok: false, error: stubError('removeLocal') }),
+    remoteMkdir: async () => ({ ok: false, error: stubError('remoteMkdir') }),
+    remoteRename: async () => ({ ok: false, error: stubError('remoteRename') }),
+    remoteRemove: async () => ({ ok: false, error: stubError('remoteRemove') }),
     showItemInFolder: async () => ({ ok: false, error: stubError('showItemInFolder') })
   }
 }

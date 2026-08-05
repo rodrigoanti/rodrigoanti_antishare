@@ -139,7 +139,7 @@ export function Machines({ onOpenPeer }: MachinesProps): ReactElement {
       <Modal
         open={Boolean(pendingPeer)}
         onClose={closeTokenModal}
-        title="Clave requerida"
+        title="Clave"
         size="sm"
         footer={
           <>
@@ -159,7 +159,7 @@ export function Machines({ onOpenPeer }: MachinesProps): ReactElement {
               : null}
           </p>
           <div className="field">
-            <label htmlFor="peer-token">Clave / token</label>
+            <label htmlFor="peer-token">Clave</label>
             <Input
               ref={tokenInputRef}
               id="peer-token"
