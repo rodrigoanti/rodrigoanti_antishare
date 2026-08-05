@@ -40,6 +40,8 @@ function createStub(): AntishareApi {
     remoteList: async () => ({ ok: false, error: stubError('remoteList') }),
     remoteDownload: async () => ({ ok: false, error: stubError('remoteDownload') }),
     remoteUpload: async () => ({ ok: false, error: stubError('remoteUpload') }),
+    importLocal: async () => ({ ok: false, error: stubError('importLocal') }),
+    importRemote: async () => ({ ok: false, error: stubError('importRemote') }),
     showItemInFolder: async () => ({ ok: false, error: stubError('showItemInFolder') })
   }
 }

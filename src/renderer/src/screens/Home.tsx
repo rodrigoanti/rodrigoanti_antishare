@@ -10,6 +10,7 @@ import {
 } from 'react'
 import type { DirEntry, Peer, ShareStatus } from '../../../shared/types'
 import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
+import { isOsFileDrag, markInternalDrag, osDropPaths } from '../osDrop'
 import { Alert, Button, Input, Modal } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
 import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
@@ -77,6 +78,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [tokenError, setTokenError] = useState<string | null>(null)
   const [busyFile, setBusyFile] = useState<string | null>(null)
   const [dragBusyPath, setDragBusyPath] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
   const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
   const hasLoadedOnce = useRef(false)
   const silentFailStreak = useRef(0)
@@ -87,6 +90,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
     new Map()
   )
+  const suppressClickRef = useRef(false)
+  const dropDepthRef = useRef(0)
 
   const running = status?.running ?? false
   const localLanHosts = useMemo(() => lanHostsFromShareUrls(status?.urls), [status?.urls])
@@ -406,7 +411,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   }
 
   function prepareRemoteDrag(entry: DirEntry): void {
-    if (entry.isDir || nav.kind !== 'peer') return
+    if (nav.kind !== 'peer') return
     const existing = preparedDragRef.current.get(entry.path)
     if (existing?.filePath || existing?.promise) return
 
@@ -419,7 +424,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           baseUrl: nav.peer.baseUrl,
           path: entry.path,
           token: nav.token,
-          isDir: false
+          isDir: entry.isDir
         })
         if (!result.ok || !result.filePath) {
           setError(
@@ -450,18 +455,22 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     preparedDragRef.current.set(entry.path, { promise })
   }
 
-  function handleFileDragStart(entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
-    if (entry.isDir || nav.kind === 'root') {
+  function handleEntryDragStart(entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+    if (nav.kind === 'root') {
       e.preventDefault()
       return
     }
-    e.dataTransfer.effectAllowed = 'copy'
-    e.dataTransfer.setData('text/plain', entry.name)
+    suppressClickRef.current = true
+    markInternalDrag(e.dataTransfer, entry.name)
     setError(null)
     void (async () => {
       try {
         if (nav.kind === 'local') {
-          const result = await api.startDrag({ kind: 'local', path: entry.path, isDir: false })
+          const result = await api.startDrag({
+            kind: 'local',
+            path: entry.path,
+            isDir: entry.isDir
+          })
           if (!result.ok) {
             setError(
               mapIpcError(
@@ -486,7 +495,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               baseUrl: nav.peer.baseUrl,
               path: entry.path,
               token: nav.token,
-              isDir: false
+              isDir: entry.isDir
             })
             if (prepared.ok && prepared.filePath) {
               filePath = prepared.filePath
@@ -512,7 +521,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           return
         }
 
-        const result = await api.startDragLocal(filePath)
+        const result = await api.startDragLocal(filePath, { isDir: entry.isDir })
         if (!result.ok) {
           setError(
             mapIpcError(
@@ -534,14 +543,90 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     })()
   }
 
+  useEffect(() => {
+    dropDepthRef.current = 0
+    setDropActive(false)
+  }, [nav])
+
+  function acceptOsDrop(e: DragEvent): boolean {
+    if (nav.kind === 'root') return false
+    if (!isOsFileDrag(e.dataTransfer)) return false
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    return true
+  }
+
+  function handleOsDragEnter(e: DragEvent): void {
+    if (!acceptOsDrop(e)) return
+    dropDepthRef.current += 1
+    setDropActive(true)
+  }
+
+  function handleOsDragOver(e: DragEvent): void {
+    if (!acceptOsDrop(e)) return
+    setDropActive(true)
+  }
+
+  function handleOsDragLeave(): void {
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1)
+    if (dropDepthRef.current === 0) setDropActive(false)
+  }
+
+  async function importOsDrop(dt: DataTransfer): Promise<void> {
+    if (nav.kind === 'root') return
+    const sources = osDropPaths(dt)
+    if (sources.length === 0) {
+      setError('No se pudo leer la ruta local. Arrastrá desde el Finder o el Explorador.')
+      return
+    }
+    setImporting(true)
+    setError(null)
+    try {
+      if (nav.kind === 'local') {
+        const result = await api.importLocal({ sources, destPath: nav.path || undefined })
+        if (!result.ok) {
+          setError(mapIpcError(result.error, 'No se pudo importar.'))
+          return
+        }
+      } else {
+        const result = await api.importRemote({
+          baseUrl: nav.peer.baseUrl,
+          sources,
+          destPath: nav.path || undefined,
+          token: nav.token
+        })
+        if (!result.ok) {
+          setError(mapIpcError(result.error, 'No se pudo subir al peer.'))
+          return
+        }
+      }
+      await loadContents({ silent: true })
+    } catch (err) {
+      setError(
+        mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
+      )
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  function handleOsDrop(e: DragEvent): void {
+    if (nav.kind === 'root') return
+    e.preventDefault()
+    dropDepthRef.current = 0
+    setDropActive(false)
+    if (!isOsFileDrag(e.dataTransfer) || importing) return
+    void importOsDrop(e.dataTransfer)
+  }
+
   const showLoading = loading && !hasLoadedOnce.current && nav.kind !== 'root'
   const localOnline = running
 
   return (
     <section
-      className={`finder${dragBusyPath ? ' finder-drag-busy' : ''}`}
+      className={`finder${dragBusyPath || importing ? ' finder-drag-busy' : ''}`}
       aria-label="Compartidos"
-      aria-busy={Boolean(dragBusyPath)}
+      aria-busy={Boolean(dragBusyPath || importing)}
     >
       <header className="finder-toolbar">
         <div className="finder-toolbar-left">
@@ -585,13 +670,18 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               : nav.peer.name}
         </h1>
         {nav.kind !== 'root' && (
-          <Button variant="ghost" size="sm" onClick={() => void loadContents({ silent: false })}>
-            Actualizar
-          </Button>
+          <div className="finder-title-actions">
+            {importing ? (
+              <span className="finder-import-status" role="status" aria-live="polite">
+                Importando…
+              </span>
+            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => void loadContents({ silent: false })}>
+              Actualizar
+            </Button>
+          </div>
         )}
       </div>
-
-      {showLoading && <div className="state-box">Cargando…</div>}
 
       {nav.kind === 'root' && (
         <>
@@ -650,9 +740,16 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         </>
       )}
 
-      {nav.kind !== 'root' && !showLoading && (
-        <>
-          {viewMode === 'list' && entries.length > 0 && (
+      {nav.kind !== 'root' && (
+        <div
+          className={`finder-drop-target${dropActive ? ' active' : ''}`}
+          onDragEnter={handleOsDragEnter}
+          onDragOver={handleOsDragOver}
+          onDragLeave={handleOsDragLeave}
+          onDrop={handleOsDrop}
+        >
+          {showLoading && <div className="state-box">Cargando…</div>}
+          {!showLoading && viewMode === 'list' && entries.length > 0 && (
             <div className="finder-list-head" aria-hidden="true">
               <span />
               <span>Nombre</span>
@@ -661,10 +758,10 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               <span />
             </div>
           )}
-          {entries.length === 0 && !error && (
+          {!showLoading && entries.length === 0 && !error && (
             <div className="state-box empty">Esta carpeta está vacía.</div>
           )}
-          {entries.length > 0 && (
+          {!showLoading && entries.length > 0 && (
             <ul
               className={viewMode === 'icons' ? 'finder-icons' : 'finder-list'}
               aria-label="Contenido"
@@ -677,10 +774,10 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                     kind={entry.isDir ? 'folder' : 'file'}
                     selected={selectedKey === entry.path}
                     status={
-                      entry.isDir
-                        ? 'Carpeta'
-                        : dragBusyPath === entry.path
-                          ? 'Preparando…'
+                      dragBusyPath === entry.path
+                        ? 'Preparando…'
+                        : entry.isDir
+                          ? 'Carpeta'
                           : busyFile === entry.path
                             ? '…'
                             : 'Archivo'
@@ -691,22 +788,25 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                         : `${formatSize(entry.size, false)} · ${formatMtime(entry.mtime)}`
                     }
                     sizeLabel={formatSize(entry.size, entry.isDir)}
-                    dragPreparing={!entry.isDir && dragBusyPath === entry.path}
-                    onClick={() => void openEntry(entry)}
-                    onPointerDown={
-                      !entry.isDir && nav.kind === 'peer'
-                        ? () => prepareRemoteDrag(entry)
-                        : undefined
-                    }
-                    onDragStart={
-                      entry.isDir ? undefined : (e) => handleFileDragStart(entry, e)
-                    }
+                    dragPreparing={dragBusyPath === entry.path}
+                    onClick={() => {
+                      if (suppressClickRef.current) {
+                        suppressClickRef.current = false
+                        return
+                      }
+                      void openEntry(entry)
+                    }}
+                    onPointerDown={() => {
+                      suppressClickRef.current = false
+                      if (nav.kind === 'peer') prepareRemoteDrag(entry)
+                    }}
+                    onDragStart={(e) => handleEntryDragStart(entry, e)}
                   />
                 </li>
               ))}
             </ul>
           )}
-        </>
+        </div>
       )}
 
       {savedDownload && (

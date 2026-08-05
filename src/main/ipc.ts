@@ -17,6 +17,8 @@ import {
   type RemoteListRequest,
   type RemoteDownloadRequest,
   type RemoteUploadRequest,
+  type ImportLocalRequest,
+  type RemoteImportRequest,
   type StartDragRequest,
   type StartDragResult,
   type PrepareDragRequest,
@@ -25,6 +27,7 @@ import {
 import { listShareFolder, startShareServer, type ShareServerHandle } from './shareServer'
 import { PeerDiscovery } from './discovery'
 import { remoteDownload, remoteList, remoteUpload } from './remote'
+import { importLocalPaths, importRemotePaths } from './importFiles'
 import { loadSettings, saveSettings } from './settings'
 import { runNetworkDiagnose } from './diagnose'
 import { handlePrepareDrag, handleStartDrag, handleStartDragLocal, ensureDragIconFile } from './drag'
@@ -245,6 +248,12 @@ export function registerIpc(): void {
   })
   ipcMain.handle('remote:download', async (_e, req: RemoteDownloadRequest) => remoteDownload(req))
   ipcMain.handle('remote:upload', async (_e, req: RemoteUploadRequest) => remoteUpload(req))
+  ipcMain.handle('files:importLocal', async (_e, req: ImportLocalRequest) =>
+    importLocalPaths(resolveLocalRoot(), req)
+  )
+  ipcMain.handle('files:importRemote', async (_e, req: RemoteImportRequest) =>
+    importRemotePaths(req)
+  )
 
   ipcMain.handle('shell:showItemInFolder', async (_e, filePath: string) => {
     if (typeof filePath !== 'string' || !filePath.trim()) {
@@ -275,7 +284,7 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'files:startDragLocal',
-    async (event, filePath: string): Promise<StartDragResult> =>
+    async (event, filePath: string, _opts?: { isDir?: boolean }): Promise<StartDragResult> =>
       handleStartDragLocal(event, filePath)
   )
 }

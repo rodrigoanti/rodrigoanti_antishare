@@ -1,0 +1,46 @@
+export const ANTISHARE_INTERNAL_DRAG = 'application/x-antishare-internal'
+
+export function markInternalDrag(dt: DataTransfer, label: string): void {
+  dt.effectAllowed = 'copy'
+  dt.setData(ANTISHARE_INTERNAL_DRAG, '1')
+  dt.setData('text/plain', label)
+}
+
+export function isInternalDrag(dt: DataTransfer | null | undefined): boolean {
+  if (!dt) return false
+  return Array.from(dt.types).includes(ANTISHARE_INTERNAL_DRAG)
+}
+
+export function isOsFileDrag(dt: DataTransfer | null | undefined): boolean {
+  if (!dt || isInternalDrag(dt)) return false
+  return Array.from(dt.types).includes('Files')
+}
+
+type FileWithPath = File & { path?: string }
+
+export function osDropPaths(dt: DataTransfer): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  const push = (raw: string | undefined): void => {
+    const path = raw?.trim()
+    if (!path || seen.has(path)) return
+    seen.add(path)
+    out.push(path)
+  }
+
+  if (dt.items && dt.items.length > 0) {
+    for (let i = 0; i < dt.items.length; i++) {
+      const item = dt.items[i]
+      if (item.kind !== 'file') continue
+      const file = item.getAsFile() as FileWithPath | null
+      push(file?.path)
+    }
+    if (out.length > 0) return out
+  }
+
+  for (const file of Array.from(dt.files)) {
+    push((file as FileWithPath).path)
+  }
+  return out
+}

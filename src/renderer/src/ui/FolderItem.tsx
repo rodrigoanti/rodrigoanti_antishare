@@ -29,9 +29,10 @@ export function FolderItem({
   sizeLabel,
   dragPreparing = false,
   draggable,
+  onDragStart,
   ...rest
 }: FolderItemProps): ReactElement {
-  const canDrag = kind === 'file' && draggable !== false
+  const canDrag = onDragStart != null && draggable !== false
 
   if (viewMode === 'list') {
     return (
@@ -45,6 +46,7 @@ export function FolderItem({
         )}
         aria-pressed={selected}
         draggable={canDrag}
+        onDragStart={onDragStart}
         {...rest}
       >
         <span className={styles.rowIcon} aria-hidden="true">
@@ -69,6 +71,7 @@ export function FolderItem({
       )}
       aria-pressed={selected}
       draggable={canDrag}
+      onDragStart={onDragStart}
       {...rest}
     >
       <span className={styles.iconArt} aria-hidden="true">

@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AntishareApi,
+  ImportLocalRequest,
   Peer,
   PeerAddManualRequest,
   PeerRemoveManualRequest,
   PrepareDragRequest,
   RemoteDownloadRequest,
+  RemoteImportRequest,
   RemoteListRequest,
   RemoteUploadRequest,
   ShareListLocalRequest,
@@ -25,7 +27,8 @@ const api: AntishareApi = {
   diagnoseNetwork: () => ipcRenderer.invoke('network:diagnose'),
   startDrag: (req: StartDragRequest) => ipcRenderer.invoke('files:startDrag', req),
   prepareDrag: (req: PrepareDragRequest) => ipcRenderer.invoke('files:prepareDrag', req),
-  startDragLocal: (filePath: string) => ipcRenderer.invoke('files:startDragLocal', filePath),
+  startDragLocal: (filePath: string, opts?: { isDir?: boolean }) =>
+    ipcRenderer.invoke('files:startDragLocal', filePath, opts),
   listPeers: () => ipcRenderer.invoke('peers:list'),
   onPeersUpdate: (cb: (peers: Peer[]) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, peers: Peer[]): void => cb(peers)
@@ -38,6 +41,8 @@ const api: AntishareApi = {
   remoteList: (req: RemoteListRequest) => ipcRenderer.invoke('remote:list', req),
   remoteDownload: (req: RemoteDownloadRequest) => ipcRenderer.invoke('remote:download', req),
   remoteUpload: (req: RemoteUploadRequest) => ipcRenderer.invoke('remote:upload', req),
+  importLocal: (req: ImportLocalRequest) => ipcRenderer.invoke('files:importLocal', req),
+  importRemote: (req: RemoteImportRequest) => ipcRenderer.invoke('files:importRemote', req),
   showItemInFolder: (filePath: string) => ipcRenderer.invoke('shell:showItemInFolder', filePath)
 }
 

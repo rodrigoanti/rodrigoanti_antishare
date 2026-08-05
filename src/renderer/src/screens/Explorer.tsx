@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactElement } from 'react'
 import type { DirEntry } from '../../../shared/types'
 import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
+import { isOsFileDrag, markInternalDrag, osDropPaths } from '../osDrop'
 import { Alert, Button, Input } from '../ui'
 import { PeerReachabilityAlert } from './PeerReachabilityAlert'
 
@@ -71,6 +72,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   const [token, setToken] = useState('')
   const [tokenReady, setTokenReady] = useState(false)
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
   const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
   const hasLoadedOnce = useRef(false)
   const silentFailStreak = useRef(0)
@@ -79,6 +82,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
     new Map()
   )
+  const suppressClickRef = useRef(false)
+  const dropDepthRef = useRef(0)
 
   useEffect(() => {
     setPath('')
@@ -217,7 +222,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   }
 
   function prepareRemoteDrag(entry: DirEntry): void {
-    if (entry.isDir || !target) return
+    if (!target) return
     const existing = preparedDragRef.current.get(entry.path)
     if (existing?.filePath || existing?.promise) return
 
@@ -230,7 +235,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
           baseUrl: target.baseUrl,
           path: entry.path,
           token: token.trim() || undefined,
-          isDir: false
+          isDir: entry.isDir
         })
         if (!result.ok || !result.filePath) {
           setError(
@@ -261,13 +266,13 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
     preparedDragRef.current.set(entry.path, { promise })
   }
 
-  function handleFileDragStart(entry: DirEntry, e: DragEvent<HTMLElement>): void {
-    if (entry.isDir || !target) {
+  function handleEntryDragStart(entry: DirEntry, e: DragEvent<HTMLElement>): void {
+    if (!target) {
       e.preventDefault()
       return
     }
-    e.dataTransfer.effectAllowed = 'copy'
-    e.dataTransfer.setData('text/plain', entry.name)
+    suppressClickRef.current = true
+    markInternalDrag(e.dataTransfer, entry.name)
     setError(null)
     void (async () => {
       try {
@@ -283,7 +288,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
               baseUrl: target.baseUrl,
               path: entry.path,
               token: token.trim() || undefined,
-              isDir: false
+              isDir: entry.isDir
             })
             if (prepared.ok && prepared.filePath) {
               filePath = prepared.filePath
@@ -308,7 +313,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
           return
         }
 
-        const result = await api.startDragLocal(filePath)
+        const result = await api.startDragLocal(filePath, { isDir: entry.isDir })
         if (!result.ok) {
           setError(
             mapIpcError(
@@ -355,6 +360,74 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
     }
     setBusyAction(null)
     await load({ silent: true })
+  }
+
+  useEffect(() => {
+    dropDepthRef.current = 0
+    setDropActive(false)
+  }, [target, path, tokenReady])
+
+  function acceptOsDrop(e: DragEvent): boolean {
+    if (!target || !tokenReady) return false
+    if (!isOsFileDrag(e.dataTransfer)) return false
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    return true
+  }
+
+  function handleOsDragEnter(e: DragEvent): void {
+    if (!acceptOsDrop(e)) return
+    dropDepthRef.current += 1
+    setDropActive(true)
+  }
+
+  function handleOsDragOver(e: DragEvent): void {
+    if (!acceptOsDrop(e)) return
+    setDropActive(true)
+  }
+
+  function handleOsDragLeave(): void {
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1)
+    if (dropDepthRef.current === 0) setDropActive(false)
+  }
+
+  async function importOsDrop(dt: DataTransfer): Promise<void> {
+    if (!target) return
+    const sources = osDropPaths(dt)
+    if (sources.length === 0) {
+      setError('No se pudo leer la ruta local. Arrastrá desde el Finder o el Explorador.')
+      return
+    }
+    setImporting(true)
+    setError(null)
+    try {
+      const result = await api.importRemote({
+        baseUrl: target.baseUrl,
+        sources,
+        destPath: path || undefined,
+        token: token.trim() || undefined
+      })
+      if (!result.ok) {
+        setError(mapIpcError(result.error, 'No se pudo subir al peer.'))
+        return
+      }
+      await load({ silent: true })
+    } catch (err) {
+      setError(
+        mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
+      )
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  function handleOsDrop(e: DragEvent): void {
+    if (!target || !tokenReady) return
+    e.preventDefault()
+    dropDepthRef.current = 0
+    setDropActive(false)
+    if (!isOsFileDrag(e.dataTransfer) || importing) return
+    void importOsDrop(e.dataTransfer)
   }
 
   const showLoading = loading && !hasLoadedOnce.current
@@ -435,6 +508,11 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
             <Button variant="ghost" size="sm" onClick={() => void load({ silent: false })} disabled={loading}>
               Actualizar
             </Button>
+            {importing ? (
+              <span className="finder-import-status" role="status" aria-live="polite">
+                Importando…
+              </span>
+            ) : null}
             <Button
               variant="primary"
               size="md"
@@ -456,6 +534,13 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
             />
           </div>
 
+          <div
+            className={`finder-drop-target${dropActive ? ' active' : ''}`}
+            onDragEnter={handleOsDragEnter}
+            onDragOver={handleOsDragOver}
+            onDragLeave={handleOsDragLeave}
+            onDrop={handleOsDrop}
+          >
           {showLoading && <div className="state-box">Cargando…</div>}
 
           {!showLoading && entries.length === 0 && !error && (
@@ -480,18 +565,30 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
                         {entry.isDir ? (
                           <button
                             type="button"
-                            className="file-link dir"
-                            onClick={() => setPath(entry.path || joinPath(path, entry.name))}
+                            className="file-link dir file-drag"
+                            draggable
+                            onPointerDown={() => {
+                              suppressClickRef.current = false
+                              prepareRemoteDrag(entry)
+                            }}
+                            onDragStart={(e) => handleEntryDragStart(entry, e)}
+                            onClick={() => {
+                              if (suppressClickRef.current) {
+                                suppressClickRef.current = false
+                                return
+                              }
+                              setPath(entry.path || joinPath(path, entry.name))
+                            }}
                           >
                             {entry.name}/
+                            {busyAction === entry.path ? ' Preparando…' : ''}
                           </button>
                         ) : (
                           <span
                             className="file-drag"
                             draggable
                             onPointerDown={() => prepareRemoteDrag(entry)}
-                            onDragStart={(e) => handleFileDragStart(entry, e)}
-                            title="Arrastrá al Finder o Explorador de archivos para guardar"
+                            onDragStart={(e) => handleEntryDragStart(entry, e)}
                           >
                             {entry.name}
                             {busyAction === entry.path ? '…' : ''}
@@ -518,6 +615,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
               </table>
             </div>
           )}
+          </div>
         </>
       )}
 

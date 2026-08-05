@@ -18,7 +18,7 @@ import type {
   StartDragResult
 } from '../shared/types'
 import { resolveSafe } from './shareServer'
-import { remoteDownload } from './remote'
+import { remoteDownload, remoteList } from './remote'
 
 export const DRAG_DIR = join(tmpdir(), 'antishare-drag')
 const MAX_TEMP_AGE_MS = 30 * 60 * 1000
@@ -95,6 +95,17 @@ function cleanOldTemps(): void {
   }
 }
 
+function safeDragName(raw: string, fallback: string): string {
+  const safe = basename(String(raw || '').replace(/\\/g, '/')).replace(/[/\\]/g, '_').trim()
+  return safe || fallback
+}
+
+/** Payload for webContents.startDrag: Windows also needs `files` for folders and files. */
+export function startDragPayload(filePath: string): { file: string; files?: string[] } {
+  if (process.platform === 'win32') return { file: filePath, files: [filePath] }
+  return { file: filePath }
+}
+
 function beginDrag(event: IpcMainInvokeEvent, filePath: string): StartDragResult {
   const icon = dragIcon()
   if (icon.isEmpty()) {
@@ -104,19 +115,10 @@ function beginDrag(event: IpcMainInvokeEvent, filePath: string): StartDragResult
     }
   }
   try {
-    const opts: {
-      file: string
-      icon: NativeImage
-      files?: string[]
-    } = {
-      file: filePath,
+    event.sender.startDrag({
+      ...startDragPayload(filePath),
       icon
-    }
-    // Electron on Windows: also pass files[] when supported
-    if (process.platform === 'win32') {
-      opts.files = [filePath]
-    }
-    event.sender.startDrag(opts)
+    })
     return { ok: true }
   } catch (e) {
     return {
@@ -126,22 +128,19 @@ function beginDrag(event: IpcMainInvokeEvent, filePath: string): StartDragResult
   }
 }
 
-/** Resolve local share file to absolute path (no drag). */
-function resolveLocalFile(localRoot: string | null, relPath: string): PrepareDragResult {
+/** Resolve a local share file or folder to its absolute path (no copy). */
+export function resolveLocalDragPath(localRoot: string | null, relPath: string): PrepareDragResult {
   if (!localRoot) {
     return { ok: false, error: 'No hay carpeta compartida configurada.' }
   }
   if (!relPath.trim()) {
-    return { ok: false, error: 'Ruta de archivo inválida.' }
+    return { ok: false, error: 'Ruta inválida.' }
   }
   try {
     const abs = resolveSafe(localRoot, relPath)
     const st = statSync(abs)
-    if (st.isDirectory()) {
-      return { ok: false, error: 'Solo se pueden arrastrar archivos (no carpetas).' }
-    }
-    if (!st.isFile()) {
-      return { ok: false, error: 'No es un archivo.' }
+    if (!st.isFile() && !st.isDirectory()) {
+      return { ok: false, error: 'La ruta no es un archivo ni una carpeta.' }
     }
     return { ok: true, filePath: abs }
   } catch (e) {
@@ -153,14 +152,24 @@ function resolveLocalFile(localRoot: string | null, relPath: string): PrepareDra
   }
 }
 
-async function downloadRemoteToDragDir(req: {
+function uniqueDragDest(name: string): string {
+  mkdirSync(DRAG_DIR, { recursive: true })
+  let candidate = join(DRAG_DIR, name)
+  let n = 1
+  while (existsSync(candidate)) {
+    candidate = join(DRAG_DIR, `${name} (${n})`)
+    n++
+  }
+  return candidate
+}
+
+async function downloadRemoteFileToDragDir(req: {
   baseUrl: string
   path: string
   token?: string
 }): Promise<PrepareDragResult> {
-  mkdirSync(DRAG_DIR, { recursive: true })
-  const safeName = basename(req.path.replace(/\\/g, '/')).replace(/[/\\]/g, '_') || 'download.bin'
-  const destPath = join(DRAG_DIR, `${Date.now()}-${safeName}`)
+  const safeName = safeDragName(req.path, 'download.bin')
+  const destPath = uniqueDragDest(`${Date.now()}-${safeName}`)
 
   const dl = await remoteDownload({
     baseUrl: req.baseUrl,
@@ -181,9 +190,88 @@ async function downloadRemoteToDragDir(req: {
   return { ok: true, filePath: dl.destPath }
 }
 
+async function downloadRemoteTree(
+  baseUrl: string,
+  remotePath: string,
+  destDir: string,
+  token?: string
+): Promise<void> {
+  const listed = await remoteList({ baseUrl, path: remotePath, token })
+  if (!listed.ok) {
+    throw new Error(listed.error || `No se pudo listar ${remotePath || '/'}.`)
+  }
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of listed.entries ?? []) {
+    const childName = safeDragName(entry.name, entry.isDir ? 'folder' : 'file')
+    const childDest = join(destDir, childName)
+    if (entry.isDir) {
+      await downloadRemoteTree(baseUrl, entry.path, childDest, token)
+      continue
+    }
+    const dl = await remoteDownload({
+      baseUrl,
+      path: entry.path,
+      destPath: childDest,
+      token
+    })
+    if (!dl.ok) {
+      const err = dl.error || ''
+      if (err.toLowerCase().includes('traversal') || err.includes('403')) continue
+      throw new Error(err || `No se pudo descargar ${entry.path}.`)
+    }
+  }
+}
+
+/** Materialize a remote directory under DRAG_DIR, keeping the root folder name. */
+export async function materializeRemoteFolder(req: {
+  baseUrl: string
+  path: string
+  token?: string
+}): Promise<PrepareDragResult> {
+  const rootName = safeDragName(req.path, 'folder')
+  const destRoot = uniqueDragDest(rootName)
+  mkdirSync(destRoot, { recursive: true })
+  try {
+    await downloadRemoteTree(req.baseUrl, req.path, destRoot, req.token)
+  } catch (e) {
+    try {
+      rmSync(destRoot, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.toLowerCase().includes('traversal')) {
+      return { ok: false, error: 'Ruta no permitida (path traversal bloqueado).' }
+    }
+    return { ok: false, error: msg }
+  }
+  return { ok: true, filePath: destRoot }
+}
+
+async function prepareRemoteDrag(req: {
+  baseUrl: string
+  path: string
+  token?: string
+  isDir?: boolean
+}): Promise<PrepareDragResult> {
+  if (!req.baseUrl || !req.path) {
+    return { ok: false, error: 'Faltan baseUrl o path del ítem remoto.' }
+  }
+  if (req.isDir === true) return materializeRemoteFolder(req)
+  if (req.isDir === false) return downloadRemoteFileToDragDir(req)
+
+  const listed = await remoteList({
+    baseUrl: req.baseUrl,
+    path: req.path,
+    token: req.token
+  })
+  if (listed.ok) return materializeRemoteFolder(req)
+  return downloadRemoteFileToDragDir(req)
+}
+
 /**
- * Prepare a file for OS drag (pointerdown / before dragstart).
- * Remote files are downloaded to DRAG_DIR; local files resolve under share root.
+ * Prepare a file or folder for OS drag (pointerdown / before dragstart).
+ * Remote items land in DRAG_DIR; local items resolve under the share root without copying.
  * Frontend should call startDragLocal(filePath) from dragstart with the returned path.
  */
 export async function handlePrepareDrag(
@@ -191,40 +279,48 @@ export async function handlePrepareDrag(
   localRoot: string | null
 ): Promise<PrepareDragResult> {
   cleanOldTemps()
-  if (req.isDir) {
-    return { ok: false, error: 'Solo se pueden arrastrar archivos (no carpetas).' }
-  }
 
   if (req.kind === 'local') {
-    return resolveLocalFile(localRoot, req.path)
+    return resolveLocalDragPath(localRoot, req.path)
   }
 
-  if (!req.baseUrl || !req.path) {
-    return { ok: false, error: 'Faltan baseUrl o path del archivo remoto.' }
-  }
-  return downloadRemoteToDragDir({
+  return prepareRemoteDrag({
     baseUrl: req.baseUrl,
     path: req.path,
-    token: req.token
+    token: req.token,
+    isDir: req.isDir
   })
 }
 
-/** startDrag an absolute file path already on disk (prepared or local). */
+/** Validate an absolute file or folder path before startDrag. */
+export function resolveDragTarget(filePath: string): PrepareDragResult {
+  if (!filePath || typeof filePath !== 'string') {
+    return { ok: false, error: 'Ruta inválida.' }
+  }
+  try {
+    if (!existsSync(filePath)) {
+      return { ok: false, error: 'La ruta no existe.' }
+    }
+    const st = statSync(filePath)
+    if (!st.isFile() && !st.isDirectory()) {
+      return { ok: false, error: 'La ruta no es un archivo ni una carpeta.' }
+    }
+    return { ok: true, filePath }
+  } catch {
+    return { ok: false, error: 'No se pudo leer la ruta para arrastrar.' }
+  }
+}
+
+/** startDrag an absolute file or folder path already on disk (prepared or local). */
 export function handleStartDragLocal(
   event: IpcMainInvokeEvent,
   filePath: string
 ): StartDragResult {
-  if (!filePath || typeof filePath !== 'string') {
-    return { ok: false, error: 'Ruta de archivo inválida.' }
+  const resolved = resolveDragTarget(filePath)
+  if (!resolved.ok || !resolved.filePath) {
+    return { ok: false, error: resolved.error }
   }
-  try {
-    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-      return { ok: false, error: 'El archivo no existe o no es un archivo.' }
-    }
-  } catch {
-    return { ok: false, error: 'No se pudo leer el archivo para arrastrar.' }
-  }
-  return beginDrag(event, filePath)
+  return beginDrag(event, resolved.filePath)
 }
 
 /** Combined helper: prepare + startDrag (OK on macOS; prefer prepare+startDragLocal on Windows). */

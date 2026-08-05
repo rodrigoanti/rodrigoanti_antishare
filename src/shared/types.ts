@@ -144,6 +144,33 @@ export interface RemoteUploadResult {
   error?: string
 }
 
+/** Drop-import absolute OS paths into the local share (files and folders). */
+export interface ImportLocalRequest {
+  sources: string[]
+  /** Relative folder inside the share (current explorer path). */
+  destPath?: string
+}
+
+export interface ImportLocalResult {
+  ok: boolean
+  imported?: number
+  error?: string
+}
+
+/** Drop-import absolute OS paths onto a remote peer share (files and folder trees). */
+export interface RemoteImportRequest {
+  baseUrl: string
+  sources: string[]
+  destPath?: string
+  token?: string
+}
+
+export interface RemoteImportResult {
+  ok: boolean
+  imported?: number
+  error?: string
+}
+
 /** Discovery announcement payload (UDP). */
 export interface PeerAnnouncement {
   name: string
@@ -165,10 +192,11 @@ export const DISCOVERY_MAGIC = 'antishare-v1'
  */
 export const PEER_STALE_MS = 10_000
 
-/** OS drag-out (Electron startDrag). Files only. */
+/** OS drag-out (Electron startDrag). Files and folders. */
 export interface StartDragLocalRequest {
   kind: 'local'
   path: string
+  /** When true, `path` is a directory (also detected from disk if omitted). */
   isDir?: boolean
 }
 
@@ -177,6 +205,7 @@ export interface StartDragRemoteRequest {
   baseUrl: string
   path: string
   token?: string
+  /** When true, materialize the remote directory tree before dragging. */
   isDir?: boolean
 }
 
@@ -186,7 +215,7 @@ export type PrepareDragRequest = StartDragRequest
 
 export interface PrepareDragResult {
   ok: boolean
-  /** Absolute path ready for startDragLocal / startDrag. */
+  /** Absolute file or folder path ready for startDragLocal / startDrag. */
   filePath?: string
   error?: string
 }
@@ -207,10 +236,13 @@ export interface AntishareApi {
   diagnoseNetwork: () => Promise<NetworkDiagnoseResult>
   /** Combined prepare+drag (fine on macOS; on Windows prefer prepareDrag + startDragLocal). */
   startDrag: (req: StartDragRequest) => Promise<StartDragResult>
-  /** Download/resolve file ahead of dragstart (required for reliable remote drag on Windows). */
+  /** Resolve a local file/folder or materialize a remote one ahead of dragstart. */
   prepareDrag: (req: PrepareDragRequest) => Promise<PrepareDragResult>
-  /** Call from dragstart with an absolute path from prepareDrag. */
-  startDragLocal: (filePath: string) => Promise<StartDragResult>
+  /** Call from dragstart with an absolute file or folder path from prepareDrag. */
+  startDragLocal: (
+    filePath: string,
+    opts?: { isDir?: boolean }
+  ) => Promise<StartDragResult>
   listPeers: () => Promise<Peer[]>
   onPeersUpdate: (cb: (peers: Peer[]) => void) => () => void
   addManualPeer: (req: PeerAddManualRequest) => Promise<PeerAddManualResult>
@@ -218,5 +250,9 @@ export interface AntishareApi {
   remoteList: (req: RemoteListRequest) => Promise<RemoteListResult>
   remoteDownload: (req: RemoteDownloadRequest) => Promise<RemoteDownloadResult>
   remoteUpload: (req: RemoteUploadRequest) => Promise<RemoteUploadResult>
+  /** Copy dropped OS files/folders into the local share. */
+  importLocal: (req: ImportLocalRequest) => Promise<ImportLocalResult>
+  /** Upload dropped OS files/folders (trees) to a remote peer. */
+  importRemote: (req: RemoteImportRequest) => Promise<RemoteImportResult>
   showItemInFolder: (filePath: string) => Promise<{ ok: boolean; error?: string }>
 }
