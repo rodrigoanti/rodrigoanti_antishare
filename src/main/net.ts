@@ -94,6 +94,16 @@ export function hostOnLocalSubnet(
   return localIfaces.some((iface) => sameSubnetIPv4(h, iface.address, iface.netmask))
 }
 
+/** Local iface IPv4 whose subnet contains `host`, if any. */
+export function localAddressForPeer(host: string): string | undefined {
+  const h = normalizeHost(host)
+  if (!h || isUnusableAnnounceHost(h)) return undefined
+  for (const iface of getLanIfaces()) {
+    if (sameSubnetIPv4(h, iface.address, iface.netmask)) return iface.address
+  }
+  return undefined
+}
+
 /**
  * Primary peer IP: (1) same subnet as best local iface (2) UDP fromHost (3) announced.
  * Never loopback / 0.0.0.0. Walk `localIfaces` in caller order (preferred NIC first).

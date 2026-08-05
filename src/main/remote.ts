@@ -1,4 +1,6 @@
-import { app } from 'electron'
+import { app, net as electronNet } from 'electron'
+import { request as httpRequest } from 'http'
+import type { IncomingMessage } from 'http'
 import { createWriteStream, createReadStream, existsSync, statSync } from 'fs'
 import { basename, extname, join } from 'path'
 import { pipeline } from 'stream/promises'
@@ -13,7 +15,13 @@ import {
   type RemoteUploadRequest,
   type RemoteUploadResult
 } from '../shared/types'
-import { getLanIPv4, hostOnLocalSubnet, getLanIfaces, normalizeHost } from './net'
+import {
+  getLanIPv4,
+  getLanIfaces,
+  hostOnLocalSubnet,
+  localAddressForPeer,
+  normalizeHost
+} from './net'
 
 const LIST_TIMEOUT_MS = 8_000
 const TRANSFER_TIMEOUT_MS = 120_000
@@ -62,6 +70,12 @@ export function classifyPeerNetworkError(
     return `Conexión rechazada en ${where} (ECONNREFUSED). Nadie acepta TCP ${target.port} o el firewall lo corta. ${hint}`
   }
   if (hay.includes('enetunreach') || hay.includes('ehostunreach')) {
+    if (hostOnLocalSubnet(target.host, getLanIfaces())) {
+      return (
+        `La red no alcanza ${where} (ENETUNREACH) aunque están en la misma subred. ` +
+        `Probable VPN/ruta por defecto, firewall inbound TCP ${target.port} o aislamiento AP. ${hint}`
+      )
+    }
     return `La red no alcanza ${where} (ENETUNREACH). Distinta subred o Wi‑Fi invitado. ${hint}`
   }
   if (hay.includes('enotfound') || hay.includes('eai_again')) {
@@ -72,23 +86,6 @@ export function classifyPeerNetworkError(
   }
   const msg = err instanceof Error ? err.message : String(err)
   return `${msg} (${where}). ${hint}`
-}
-
-function isRetryableNetworkError(err: unknown): boolean {
-  const hay = errorHaystack(err)
-  return (
-    hay.includes('fetch failed') ||
-    hay.includes('econnreset') ||
-    hay.includes('econnrefused') ||
-    hay.includes('econnaborted') ||
-    hay.includes('epipe') ||
-    hay.includes('socket') ||
-    hay.includes('network') ||
-    hay.includes('und_err') ||
-    hay.includes('other side closed') ||
-    hay.includes('aborted') ||
-    hay.includes('timeout')
-  )
 }
 
 function parseShareBase(baseUrl: string): { baseUrl: string; host: string; port: number } {
@@ -103,31 +100,136 @@ function parseShareBase(baseUrl: string): { baseUrl: string; host: string; port:
   }
 }
 
-/** LAN peer fetch with timeout; one retry on stale keep-alive / reset races. */
-async function peerFetch(
-  url: string,
-  init: RequestInit & { timeoutMs?: number; retries?: number } = {}
-): Promise<Response> {
-  const { timeoutMs = LIST_TIMEOUT_MS, retries = 1, headers, ...rest } = init
-  let lastError: unknown
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fetch(url, {
-        ...rest,
-        cache: 'no-store',
+export type PeerHttpResult = {
+  status: number
+  ok: boolean
+  json: () => Promise<unknown>
+  bodyStream: Readable
+}
+
+function nodeHttpOnce(
+  url: URL,
+  init: {
+    method?: string
+    headers?: Record<string, string>
+    body?: Buffer | string
+    timeoutMs: number
+    localAddress?: string
+    stream?: boolean
+  }
+): Promise<PeerHttpResult> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname.replace(/^\[|\]$/g, ''),
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: init.method || 'GET',
         headers: {
           Connection: 'close',
-          ...(headers as Record<string, string> | undefined)
+          ...(init.headers || {})
         },
-        signal: AbortSignal.timeout(timeoutMs)
-      })
-    } catch (e) {
-      lastError = e
-      if (attempt >= retries || !isRetryableNetworkError(e)) throw e
-      await new Promise((r) => setTimeout(r, 150 + attempt * 200))
+        localAddress: init.localAddress,
+        timeout: init.timeoutMs
+      },
+      (res: IncomingMessage) => {
+        if (init.stream) {
+          resolve({
+            status: res.statusCode || 0,
+            ok: (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300,
+            json: async () => {
+              throw new Error('json() not available on streamed response')
+            },
+            bodyStream: res
+          })
+          return
+        }
+        const chunks: Buffer[] = []
+        res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+        res.on('end', () => {
+          const buf = Buffer.concat(chunks)
+          resolve({
+            status: res.statusCode || 0,
+            ok: (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300,
+            json: async () => (buf.length ? JSON.parse(buf.toString('utf8')) : {}),
+            bodyStream: Readable.from(buf)
+          })
+        })
+        res.on('error', reject)
+      }
+    )
+    req.on('timeout', () => {
+      req.destroy(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT' }))
+    })
+    req.on('error', reject)
+    if (init.body) req.write(init.body)
+    req.end()
+  })
+}
+
+async function electronFetchOnce(
+  urlStr: string,
+  init: {
+    method?: string
+    headers?: Record<string, string>
+    body?: Buffer | string
+    timeoutMs: number
+    stream?: boolean
+  }
+): Promise<PeerHttpResult> {
+  const res = await electronNet.fetch(urlStr, {
+    method: init.method || 'GET',
+    headers: {
+      Connection: 'close',
+      ...(init.headers || {})
+    },
+    body: init.body == null ? undefined : typeof init.body === 'string' ? init.body : new Uint8Array(init.body),
+    signal: AbortSignal.timeout(init.timeoutMs)
+  })
+  if (init.stream && res.body) {
+    return {
+      status: res.status,
+      ok: res.ok,
+      json: async () => res.json(),
+      bodyStream: Readable.fromWeb(res.body as import('stream/web').ReadableStream)
     }
   }
-  throw lastError
+  const buf = Buffer.from(await res.arrayBuffer())
+  return {
+    status: res.status,
+    ok: res.ok,
+    json: async () => (buf.length ? JSON.parse(buf.toString('utf8')) : {}),
+    bodyStream: Readable.from(buf)
+  }
+}
+
+/** Peer HTTP bound to the LAN NIC that shares the peer subnet when possible. */
+export async function peerHttp(
+  urlStr: string,
+  init: {
+    method?: string
+    headers?: Record<string, string>
+    body?: Buffer | string
+    timeoutMs?: number
+    stream?: boolean
+  } = {}
+): Promise<PeerHttpResult> {
+  const timeoutMs = init.timeoutMs ?? LIST_TIMEOUT_MS
+  const url = new URL(urlStr)
+  const localAddress = localAddressForPeer(url.hostname)
+  try {
+    return await nodeHttpOnce(url, { ...init, timeoutMs, localAddress })
+  } catch (e) {
+    if (localAddress) {
+      try {
+        return await electronFetchOnce(urlStr, { ...init, timeoutMs })
+      } catch {
+        throw e
+      }
+    }
+    throw e
+  }
 }
 
 /** Pick a free path in dir: name, name (1).ext, name (2).ext, … (win32 + posix safe). */
@@ -169,10 +271,9 @@ export async function remoteList(req: RemoteListRequest): Promise<RemoteListResu
     lastTarget = target
     try {
       const url = `${target.baseUrl}/api/list?path=${encodeURIComponent(path)}`
-      const res = await peerFetch(url, {
+      const res = await peerHttp(url, {
         headers: authHeaders(req.token),
-        timeoutMs: LIST_TIMEOUT_MS,
-        retries: 0
+        timeoutMs: LIST_TIMEOUT_MS
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string }
@@ -212,25 +313,30 @@ export async function remoteDownload(req: RemoteDownloadRequest): Promise<Remote
     }
     const base = req.baseUrl.replace(/\/$/, '')
     const url = `${base}/api/download?path=${encodeURIComponent(req.path)}`
-    const res = await peerFetch(url, {
+    const res = await peerHttp(url, {
       headers: authHeaders(req.token),
       timeoutMs: TRANSFER_TIMEOUT_MS,
-      retries: 1
+      stream: true
     })
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      let detail = ''
+      try {
+        const chunks: Buffer[] = []
+        for await (const c of res.bodyStream) {
+          chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
+        }
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: string }
+        detail = parsed.error || ''
+      } catch {
+        /* ignore */
+      }
       return {
         ok: false,
-        error: body.error || `No se pudo descargar el archivo (HTTP ${res.status}).`
+        error: detail || `No se pudo descargar el archivo (HTTP ${res.status}).`
       }
     }
-    // Explicit destPath (e.g. drag temp) wins; otherwise OS Downloads folder.
     const dest = req.destPath || defaultDownloadsDest(req.path)
-    if (!res.body) {
-      return { ok: false, error: 'La respuesta de descarga está vacía.' }
-    }
-    const nodeStream = Readable.fromWeb(res.body as import('stream/web').ReadableStream)
-    await pipeline(nodeStream, createWriteStream(dest))
+    await pipeline(res.bodyStream, createWriteStream(dest))
     return { ok: true, destPath: dest }
   } catch (e) {
     return {
@@ -266,7 +372,7 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
     })
     const body = Buffer.concat([preamble, fileBuf, epilogue])
 
-    const res = await peerFetch(url, {
+    const res = await peerHttp(url, {
       method: 'POST',
       headers: {
         ...authHeaders(req.token),
@@ -274,8 +380,7 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
         'Content-Length': String(body.length)
       },
       body,
-      timeoutMs: TRANSFER_TIMEOUT_MS,
-      retries: 1
+      timeoutMs: TRANSFER_TIMEOUT_MS
     })
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string }

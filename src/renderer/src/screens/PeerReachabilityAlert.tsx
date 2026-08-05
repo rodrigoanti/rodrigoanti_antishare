@@ -74,16 +74,13 @@ export function PeerReachabilityAlert({
   const peerIps = uniqueHostnames([host, origin, ...(hosts ?? [])])
   const localIps = uniqueHostnames(localHosts ?? []).filter((h) => !isLoopbackHost(h))
   const localNets = new Set(localIps.map(ipv4Prefix24).filter((n): n is string => Boolean(n)))
-  const has100Subnet = peerIps.some((ip) => ip.startsWith('192.168.100.'))
   const otherSubnetIps =
     localNets.size > 0
       ? peerIps.filter((ip) => {
           const net = ipv4Prefix24(ip)
-          return Boolean(net) && !localNets.has(net!)
+          return net != null && !localNets.has(net)
         })
-      : has100Subnet
-        ? peerIps.filter((ip) => ip.startsWith('192.168.100.'))
-        : []
+      : []
 
   return (
     <div className="peer-reach-alert">
@@ -101,25 +98,15 @@ export function PeerReachabilityAlert({
           IPs conocidas de este peer
         </p>
         <ul className="peer-host-list" aria-labelledby="peer-hosts-label">
-          {peerIps.map((ip) => {
-            const otherSubnet = otherSubnetIps.includes(ip)
-            const is100 = ip.startsWith('192.168.100.')
-            return (
-              <li key={ip}>
-                <span className="mono">{ip}</span>
-                {is100 ? (
-                  <span className="peer-host-note"> — 192.168.100.x suele ser otra subred</span>
-                ) : otherSubnet ? (
-                  <span className="peer-host-note"> — distinta a tu segmento</span>
-                ) : null}
-              </li>
-            )
-          })}
+          {peerIps.map((ip) => (
+            <li key={ip}>
+              <span className="mono">{ip}</span>
+              {otherSubnetIps.includes(ip) ? (
+                <span className="peer-host-note"> — distinta a tu segmento</span>
+              ) : null}
+            </li>
+          ))}
         </ul>
-        <p>
-          Discovery UDP no implica misma subred. Si ves 192.168.100.238 y tu red es otra, AntiShare
-          debería probar la IP de tu segmento (el backend lo está corrigiendo).
-        </p>
         {localIps.length > 0 && otherSubnetIps.length > 0 ? (
           <p>
             Tu red: <span className="mono">{localIps.join(', ')}</span>. Peer fuera de segmento:{' '}

@@ -7,7 +7,8 @@ import {
   type ShareStatus
 } from '../shared/types'
 import type { PeerDiscovery } from './discovery'
-import { buildShareUrls, getLanIPv4 } from './net'
+import { buildShareUrls, getLanIPv4, localAddressForPeer } from './net'
+import { peerHttp } from './remote'
 import { loadSettings } from './settings'
 import type { ShareServerHandle } from './shareServer'
 
@@ -31,14 +32,10 @@ async function probeHttp(
   try {
     const headers: Record<string, string> = {}
     if (token) headers['X-Share-Token'] = token
-    const res = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(timeoutMs)
-    })
+    const res = await peerHttp(url, { headers, timeoutMs })
     if (res.status === 401 && token) {
       return { ok: false, status: 401, error: 'Token inválido' }
     }
-    // 401 without token still means the server answered on that interface
     if (res.status === 401) {
       return { ok: true, status: 401 }
     }
@@ -55,8 +52,13 @@ async function probeHttp(
 }
 
 function probeTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  const localAddress = localAddressForPeer(host)
   return new Promise((resolve) => {
-    const socket = createConnection({ host, port })
+    const socket = createConnection({
+      host,
+      port,
+      ...(localAddress ? { localAddress } : {})
+    })
     const done = (ok: boolean): void => {
       socket.removeAllListeners()
       socket.destroy()
