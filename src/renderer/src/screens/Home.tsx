@@ -410,8 +410,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     }
   }
 
-  function prepareRemoteDrag(entry: DirEntry): void {
-    if (nav.kind !== 'peer') return
+  function prepareEntryDrag(entry: DirEntry): void {
+    if (nav.kind === 'root') return
     const existing = preparedDragRef.current.get(entry.path)
     if (existing?.filePath || existing?.promise) return
 
@@ -419,13 +419,20 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     setError(null)
     const promise = (async (): Promise<string | null> => {
       try {
-        const result = await api.prepareDrag({
-          kind: 'remote',
-          baseUrl: nav.peer.baseUrl,
-          path: entry.path,
-          token: nav.token,
-          isDir: entry.isDir
-        })
+        const result =
+          nav.kind === 'local'
+            ? await api.prepareDrag({
+                kind: 'local',
+                path: entry.path,
+                isDir: entry.isDir
+              })
+            : await api.prepareDrag({
+                kind: 'remote',
+                baseUrl: nav.peer.baseUrl,
+                path: entry.path,
+                token: nav.token,
+                isDir: entry.isDir
+              })
         if (!result.ok || !result.filePath) {
           setError(
             mapIpcError(result.error, `No se pudo preparar «${entry.name}» para arrastrar.`)
@@ -460,87 +467,26 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       e.preventDefault()
       return
     }
+    const filePath =
+      nav.kind === 'local' ? entry.path : preparedDragRef.current.get(entry.path)?.filePath
+    if (!filePath) {
+      e.preventDefault()
+      return
+    }
     suppressClickRef.current = true
-    markInternalDrag(e.dataTransfer, entry.name)
+    markInternalDrag(e.dataTransfer)
     setError(null)
-    void (async () => {
-      try {
-        if (nav.kind === 'local') {
-          const result = await api.startDrag({
-            kind: 'local',
-            path: entry.path,
-            isDir: entry.isDir
-          })
-          if (!result.ok) {
-            setError(
-              mapIpcError(
-                result.error,
-                `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-              )
-            )
-          }
-          return
-        }
-
-        // Remote: use prepared temp path (Windows-safe), prepare on the fly if needed
-        let filePath = preparedDragRef.current.get(entry.path)?.filePath
-        if (!filePath) {
-          setDragBusyPath(entry.path)
-          const pending = preparedDragRef.current.get(entry.path)?.promise
-          if (pending) {
-            filePath = (await pending) ?? undefined
-          } else {
-            const prepared = await api.prepareDrag({
-              kind: 'remote',
-              baseUrl: nav.peer.baseUrl,
-              path: entry.path,
-              token: nav.token,
-              isDir: entry.isDir
-            })
-            if (prepared.ok && prepared.filePath) {
-              filePath = prepared.filePath
-              preparedDragRef.current.set(entry.path, {
-                promise: Promise.resolve(prepared.filePath),
-                filePath: prepared.filePath
-              })
-            } else {
-              setError(
-                mapIpcError(
-                  prepared.error,
-                  `No se pudo preparar «${entry.name}» para arrastrar.`
-                )
-              )
-              return
-            }
-          }
-          setDragBusyPath(null)
-        }
-
-        if (!filePath) {
-          setError(`No se pudo arrastrar «${entry.name}» al Finder o Explorador.`)
-          return
-        }
-
-        const result = await api.startDragLocal(filePath, { isDir: entry.isDir })
-        if (!result.ok) {
-          setError(
-            mapIpcError(
-              result.error,
-              `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-            )
-          )
-        }
-      } catch (err) {
-        setError(
-          mapIpcError(
-            err instanceof Error ? err.message : String(err),
-            `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-          )
+    const result = api.startDragLocal(filePath, { isDir: entry.isDir })
+    if (!result.ok) {
+      e.preventDefault()
+      suppressClickRef.current = false
+      setError(
+        mapIpcError(
+          result.error,
+          `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
         )
-      } finally {
-        setDragBusyPath(null)
-      }
-    })()
+      )
+    }
   }
 
   useEffect(() => {
@@ -798,7 +744,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                     }}
                     onPointerDown={() => {
                       suppressClickRef.current = false
-                      if (nav.kind === 'peer') prepareRemoteDrag(entry)
+                      prepareEntryDrag(entry)
                     }}
                     onDragStart={(e) => handleEntryDragStart(entry, e)}
                   />

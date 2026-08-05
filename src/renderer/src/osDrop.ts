@@ -1,9 +1,8 @@
 export const ANTISHARE_INTERNAL_DRAG = 'application/x-antishare-internal'
 
-export function markInternalDrag(dt: DataTransfer, label: string): void {
+export function markInternalDrag(dt: DataTransfer): void {
   dt.effectAllowed = 'copy'
   dt.setData(ANTISHARE_INTERNAL_DRAG, '1')
-  dt.setData('text/plain', label)
 }
 
 export function isInternalDrag(dt: DataTransfer | null | undefined): boolean {

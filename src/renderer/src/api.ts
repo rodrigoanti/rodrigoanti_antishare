@@ -32,7 +32,7 @@ function createStub(): AntishareApi {
     }),
     startDrag: async () => ({ ok: false, error: stubError('startDrag') }),
     prepareDrag: async () => ({ ok: false, error: stubError('prepareDrag') }),
-    startDragLocal: async () => ({ ok: false, error: stubError('startDragLocal') }),
+    startDragLocal: () => ({ ok: false, error: stubError('startDragLocal') }),
     listPeers: async () => [],
     onPeersUpdate: () => () => undefined,
     addManualPeer: async () => ({ ok: false, error: stubError('addManualPeer') }),

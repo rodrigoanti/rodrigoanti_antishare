@@ -221,7 +221,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
     }
   }
 
-  function prepareRemoteDrag(entry: DirEntry): void {
+  function prepareEntryDrag(entry: DirEntry): void {
     if (!target) return
     const existing = preparedDragRef.current.get(entry.path)
     if (existing?.filePath || existing?.promise) return
@@ -271,68 +271,25 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
       e.preventDefault()
       return
     }
+    const filePath = preparedDragRef.current.get(entry.path)?.filePath
+    if (!filePath) {
+      e.preventDefault()
+      return
+    }
     suppressClickRef.current = true
-    markInternalDrag(e.dataTransfer, entry.name)
+    markInternalDrag(e.dataTransfer)
     setError(null)
-    void (async () => {
-      try {
-        let filePath = preparedDragRef.current.get(entry.path)?.filePath
-        if (!filePath) {
-          setBusyAction(entry.path)
-          const pending = preparedDragRef.current.get(entry.path)?.promise
-          if (pending) {
-            filePath = (await pending) ?? undefined
-          } else {
-            const prepared = await api.prepareDrag({
-              kind: 'remote',
-              baseUrl: target.baseUrl,
-              path: entry.path,
-              token: token.trim() || undefined,
-              isDir: entry.isDir
-            })
-            if (prepared.ok && prepared.filePath) {
-              filePath = prepared.filePath
-              preparedDragRef.current.set(entry.path, {
-                promise: Promise.resolve(prepared.filePath),
-                filePath: prepared.filePath
-              })
-            } else {
-              setError(
-                mapIpcError(
-                  prepared.error,
-                  `No se pudo preparar «${entry.name}» para arrastrar.`
-                )
-              )
-              return
-            }
-          }
-        }
-
-        if (!filePath) {
-          setError(`No se pudo arrastrar «${entry.name}» al Finder o Explorador.`)
-          return
-        }
-
-        const result = await api.startDragLocal(filePath, { isDir: entry.isDir })
-        if (!result.ok) {
-          setError(
-            mapIpcError(
-              result.error,
-              `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-            )
-          )
-        }
-      } catch (err) {
-        setError(
-          mapIpcError(
-            err instanceof Error ? err.message : String(err),
-            `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-          )
+    const result = api.startDragLocal(filePath, { isDir: entry.isDir })
+    if (!result.ok) {
+      e.preventDefault()
+      suppressClickRef.current = false
+      setError(
+        mapIpcError(
+          result.error,
+          `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
         )
-      } finally {
-        setBusyAction(null)
-      }
-    })()
+      )
+    }
   }
 
   async function uploadFiles(files: FileList | null): Promise<void> {
@@ -569,7 +526,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
                             draggable
                             onPointerDown={() => {
                               suppressClickRef.current = false
-                              prepareRemoteDrag(entry)
+                              prepareEntryDrag(entry)
                             }}
                             onDragStart={(e) => handleEntryDragStart(entry, e)}
                             onClick={() => {
@@ -587,7 +544,7 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
                           <span
                             className="file-drag"
                             draggable
-                            onPointerDown={() => prepareRemoteDrag(entry)}
+                            onPointerDown={() => prepareEntryDrag(entry)}
                             onDragStart={(e) => handleEntryDragStart(entry, e)}
                           >
                             {entry.name}

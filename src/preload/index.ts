@@ -28,7 +28,7 @@ const api: AntishareApi = {
   startDrag: (req: StartDragRequest) => ipcRenderer.invoke('files:startDrag', req),
   prepareDrag: (req: PrepareDragRequest) => ipcRenderer.invoke('files:prepareDrag', req),
   startDragLocal: (filePath: string, opts?: { isDir?: boolean }) =>
-    ipcRenderer.invoke('files:startDragLocal', filePath, opts),
+    ipcRenderer.sendSync('files:startDragLocal', filePath, opts),
   listPeers: () => ipcRenderer.invoke('peers:list'),
   onPeersUpdate: (cb: (peers: Peer[]) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, peers: Peer[]): void => cb(peers)

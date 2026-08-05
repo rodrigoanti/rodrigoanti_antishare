@@ -1,4 +1,4 @@
-import { nativeImage, type IpcMainInvokeEvent, type NativeImage } from 'electron'
+import { nativeImage, type IpcMainEvent, type IpcMainInvokeEvent, type NativeImage } from 'electron'
 import {
   existsSync,
   mkdirSync,
@@ -9,7 +9,8 @@ import {
   unlinkSync,
   writeFileSync
 } from 'fs'
-import { basename, join } from 'path'
+import { createHash } from 'crypto'
+import { basename, dirname, isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import type {
   PrepareDragRequest,
@@ -100,13 +101,28 @@ function safeDragName(raw: string, fallback: string): string {
   return safe || fallback
 }
 
-/** Payload for webContents.startDrag: Windows also needs `files` for folders and files. */
-export function startDragPayload(filePath: string): { file: string; files?: string[] } {
-  if (process.platform === 'win32') return { file: filePath, files: [filePath] }
-  return { file: filePath }
+export type DragItemKind = 'file' | 'directory'
+
+/** Payload for webContents.startDrag. macOS + Windows need `files` so the OS keeps dir vs file. */
+export function startDragPayload(
+  filePath: string,
+  _kind: DragItemKind
+): { file: string; files: string[] } {
+  return { file: filePath, files: [filePath] }
 }
 
-function beginDrag(event: IpcMainInvokeEvent, filePath: string): StartDragResult {
+export interface ResolvedDragTarget {
+  ok: boolean
+  filePath?: string
+  kind?: DragItemKind
+  error?: string
+}
+
+function beginDrag(
+  event: Pick<IpcMainEvent | IpcMainInvokeEvent, 'sender'>,
+  filePath: string,
+  kind: DragItemKind
+): StartDragResult {
   const icon = dragIcon()
   if (icon.isEmpty()) {
     return {
@@ -116,7 +132,7 @@ function beginDrag(event: IpcMainInvokeEvent, filePath: string): StartDragResult
   }
   try {
     event.sender.startDrag({
-      ...startDragPayload(filePath),
+      ...startDragPayload(filePath, kind),
       icon
     })
     return { ok: true }
@@ -152,15 +168,24 @@ export function resolveLocalDragPath(localRoot: string | null, relPath: string):
   }
 }
 
-function uniqueDragDest(name: string): string {
+/** Hidden unique parent so the leaf keeps the original name (no `Name (1)`). */
+function stagingParent(baseUrl: string, remotePath: string, kind: 'file' | 'dir'): string {
+  const id = createHash('sha1')
+    .update(`${baseUrl}\0${remotePath}\0${kind}`)
+    .digest('hex')
+    .slice(0, 20)
+  return join(DRAG_DIR, id)
+}
+
+function stagingLeafPath(baseUrl: string, remotePath: string, kind: 'file' | 'dir'): string {
+  const name = safeDragName(remotePath, kind === 'dir' ? 'folder' : 'download.bin')
+  return join(stagingParent(baseUrl, remotePath, kind), name)
+}
+
+function resetStagingParent(parent: string): void {
   mkdirSync(DRAG_DIR, { recursive: true })
-  let candidate = join(DRAG_DIR, name)
-  let n = 1
-  while (existsSync(candidate)) {
-    candidate = join(DRAG_DIR, `${name} (${n})`)
-    n++
-  }
-  return candidate
+  rmSync(parent, { recursive: true, force: true })
+  mkdirSync(parent, { recursive: true })
 }
 
 async function downloadRemoteFileToDragDir(req: {
@@ -168,9 +193,17 @@ async function downloadRemoteFileToDragDir(req: {
   path: string
   token?: string
 }): Promise<PrepareDragResult> {
-  const safeName = safeDragName(req.path, 'download.bin')
-  const destPath = uniqueDragDest(`${Date.now()}-${safeName}`)
+  const destPath = stagingLeafPath(req.baseUrl, req.path, 'file')
+  const parent = dirname(destPath)
+  try {
+    if (existsSync(destPath) && statSync(destPath).isFile()) {
+      return { ok: true, filePath: destPath }
+    }
+  } catch {
+    /* rematerialize */
+  }
 
+  resetStagingParent(parent)
   const dl = await remoteDownload({
     baseUrl: req.baseUrl,
     path: req.path,
@@ -178,13 +211,16 @@ async function downloadRemoteFileToDragDir(req: {
     token: req.token
   })
   if (!dl.ok || !dl.destPath) {
+    rmSync(parent, { recursive: true, force: true })
     return { ok: false, error: dl.error || 'No se pudo descargar el archivo remoto.' }
   }
   try {
     if (!statSync(dl.destPath).isFile()) {
+      rmSync(parent, { recursive: true, force: true })
       return { ok: false, error: 'La descarga no produjo un archivo.' }
     }
   } catch {
+    rmSync(parent, { recursive: true, force: true })
     return { ok: false, error: 'Archivo temporal no encontrado tras la descarga.' }
   }
   return { ok: true, filePath: dl.destPath }
@@ -222,23 +258,28 @@ async function downloadRemoteTree(
   }
 }
 
-/** Materialize a remote directory under DRAG_DIR, keeping the root folder name. */
+/** Materialize a remote directory as DRAG_DIR/<id>/OriginalName (reused or replaced). */
 export async function materializeRemoteFolder(req: {
   baseUrl: string
   path: string
   token?: string
 }): Promise<PrepareDragResult> {
-  const rootName = safeDragName(req.path, 'folder')
-  const destRoot = uniqueDragDest(rootName)
+  const destRoot = stagingLeafPath(req.baseUrl, req.path, 'dir')
+  const parent = dirname(destRoot)
+  try {
+    if (existsSync(destRoot) && statSync(destRoot).isDirectory()) {
+      return { ok: true, filePath: destRoot }
+    }
+  } catch {
+    /* rematerialize */
+  }
+
+  resetStagingParent(parent)
   mkdirSync(destRoot, { recursive: true })
   try {
     await downloadRemoteTree(req.baseUrl, req.path, destRoot, req.token)
   } catch (e) {
-    try {
-      rmSync(destRoot, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    rmSync(parent, { recursive: true, force: true })
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.toLowerCase().includes('traversal')) {
       return { ok: false, error: 'Ruta no permitida (path traversal bloqueado).' }
@@ -292,38 +333,63 @@ export async function handlePrepareDrag(
   })
 }
 
-/** Validate an absolute file or folder path before startDrag. */
-export function resolveDragTarget(filePath: string): PrepareDragResult {
+/**
+ * Stat the path (share-relative is resolved without copying) and require file vs dir when asked.
+ */
+export function resolveDragTarget(
+  filePath: string,
+  opts?: { isDir?: boolean },
+  localRoot?: string | null
+): ResolvedDragTarget {
   if (!filePath || typeof filePath !== 'string') {
     return { ok: false, error: 'Ruta inválida.' }
   }
+  let abs = filePath
+  if (!isAbsolute(abs)) {
+    const local = resolveLocalDragPath(localRoot ?? null, abs)
+    if (!local.ok || !local.filePath) return { ok: false, error: local.error }
+    abs = local.filePath
+  }
   try {
-    if (!existsSync(filePath)) {
+    if (!existsSync(abs)) {
       return { ok: false, error: 'La ruta no existe.' }
     }
-    const st = statSync(filePath)
-    if (!st.isFile() && !st.isDirectory()) {
+    const st = statSync(abs)
+    const kind: DragItemKind | undefined = st.isDirectory()
+      ? 'directory'
+      : st.isFile()
+        ? 'file'
+        : undefined
+    if (!kind) {
       return { ok: false, error: 'La ruta no es un archivo ni una carpeta.' }
     }
-    return { ok: true, filePath }
+    if (opts?.isDir === true && kind !== 'directory') {
+      return { ok: false, error: 'Se esperaba una carpeta.' }
+    }
+    if (opts?.isDir === false && kind !== 'file') {
+      return { ok: false, error: 'Se esperaba un archivo.' }
+    }
+    return { ok: true, filePath: abs, kind }
   } catch {
     return { ok: false, error: 'No se pudo leer la ruta para arrastrar.' }
   }
 }
 
-/** startDrag an absolute file or folder path already on disk (prepared or local). */
+/** startDrag an on-disk file or folder. Must run synchronously inside dragstart (sendSync). */
 export function handleStartDragLocal(
-  event: IpcMainInvokeEvent,
-  filePath: string
+  event: IpcMainEvent | IpcMainInvokeEvent,
+  filePath: string,
+  opts?: { isDir?: boolean },
+  localRoot?: string | null
 ): StartDragResult {
-  const resolved = resolveDragTarget(filePath)
-  if (!resolved.ok || !resolved.filePath) {
+  const resolved = resolveDragTarget(filePath, opts, localRoot)
+  if (!resolved.ok || !resolved.filePath || !resolved.kind) {
     return { ok: false, error: resolved.error }
   }
-  return beginDrag(event, resolved.filePath)
+  return beginDrag(event, resolved.filePath, resolved.kind)
 }
 
-/** Combined helper: prepare + startDrag (OK on macOS; prefer prepare+startDragLocal on Windows). */
+/** Combined helper: prepare + startDrag (async — not safe during dragstart). */
 export async function handleStartDrag(
   event: IpcMainInvokeEvent,
   req: StartDragRequest,
@@ -333,7 +399,7 @@ export async function handleStartDrag(
   if (!prepared.ok || !prepared.filePath) {
     return { ok: false, error: prepared.error }
   }
-  return beginDrag(event, prepared.filePath)
+  return handleStartDragLocal(event, prepared.filePath, { isDir: req.isDir }, localRoot)
 }
 
 /** Ensure drag icon exists on disk (optional warm-up). */

@@ -234,15 +234,15 @@ export interface AntishareApi {
   getSettings: () => Promise<ShareSettings>
   setSettings: (partial: Partial<ShareSettings>) => Promise<ShareSettings>
   diagnoseNetwork: () => Promise<NetworkDiagnoseResult>
-  /** Combined prepare+drag (fine on macOS; on Windows prefer prepareDrag + startDragLocal). */
+  /** Combined prepare+drag (async — do not call from dragstart). */
   startDrag: (req: StartDragRequest) => Promise<StartDragResult>
   /** Resolve a local file/folder or materialize a remote one ahead of dragstart. */
   prepareDrag: (req: PrepareDragRequest) => Promise<PrepareDragResult>
-  /** Call from dragstart with an absolute file or folder path from prepareDrag. */
-  startDragLocal: (
-    filePath: string,
-    opts?: { isDir?: boolean }
-  ) => Promise<StartDragResult>
+  /**
+   * Synchronous startDrag (sendSync). Call directly from dragstart, not inside async.
+   * Absolute prepared path, or share-relative local path.
+   */
+  startDragLocal: (filePath: string, opts?: { isDir?: boolean }) => StartDragResult
   listPeers: () => Promise<Peer[]>
   onPeersUpdate: (cb: (peers: Peer[]) => void) => () => void
   addManualPeer: (req: PeerAddManualRequest) => Promise<PeerAddManualResult>

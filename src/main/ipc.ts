@@ -282,10 +282,11 @@ export function registerIpc(): void {
       handlePrepareDrag(req, resolveLocalRoot())
   )
 
-  ipcMain.handle(
+  ipcMain.on(
     'files:startDragLocal',
-    async (event, filePath: string, _opts?: { isDir?: boolean }): Promise<StartDragResult> =>
-      handleStartDragLocal(event, filePath)
+    (event, filePath: string, opts?: { isDir?: boolean }) => {
+      event.returnValue = handleStartDragLocal(event, filePath, opts, resolveLocalRoot())
+    }
   )
 }
 
