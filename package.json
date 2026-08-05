@@ -5,11 +5,14 @@
   "main": "./out/main/index.js",
   "author": "AntiShare",
   "scripts": {
-    "dev": "electron-vite dev",
+    "postinstall": "node scripts/patch-electron-mac-plist.mjs",
+    "patch:electron-mac-plist": "node scripts/patch-electron-mac-plist.mjs",
+    "dev": "node scripts/patch-electron-mac-plist.mjs && electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview",
+    "start": "node scripts/patch-electron-mac-plist.mjs && electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac dir --mac dmg",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:win:portable": "npm run build && electron-builder --win portable --x64"
   },

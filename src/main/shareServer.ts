@@ -388,11 +388,11 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
     server.listen(opts.port, '0.0.0.0', () => resolveListen())
   })
 
-  const { all } = buildShareUrls(opts.port)
-
   return {
     port: opts.port,
-    urls: all,
+    get urls() {
+      return buildShareUrls(opts.port).all
+    },
     folder: root,
     tokenRequired: Boolean(opts.token),
     stop: () =>

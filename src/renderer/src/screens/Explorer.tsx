@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactElement } from 'react'
 import type { DirEntry } from '../../../shared/types'
-import { getApi, mapIpcError } from '../api'
+import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
 import { Alert, Button, Input } from '../ui'
+import { PeerReachabilityAlert } from './PeerReachabilityAlert'
 
 export interface ExplorerTarget {
   label: string
   baseUrl: string
+  host?: string
+  hosts?: string[]
+  localHosts?: string[]
   tokenRequired?: boolean
   initialToken?: string
 }
@@ -13,6 +17,14 @@ export interface ExplorerTarget {
 interface ExplorerProps {
   target: ExplorerTarget | null
   onBack: () => void
+}
+
+function hostFromBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host
+  } catch {
+    return baseUrl
+  }
 }
 
 function joinPath(parent: string, name: string): string {
@@ -54,6 +66,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorRaw, setErrorRaw] = useState<string | null>(null)
+  const [listUnreachable, setListUnreachable] = useState(false)
   const [token, setToken] = useState('')
   const [tokenReady, setTokenReady] = useState(false)
   const [busyAction, setBusyAction] = useState<string | null>(null)
@@ -70,6 +84,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
     setPath('')
     setEntries([])
     setError(null)
+    setErrorRaw(null)
+    setListUnreachable(false)
     hasLoadedOnce.current = false
     if (!target) {
       setToken('')
@@ -104,6 +120,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
       if (!silent) {
         setLoading(true)
         setError(null)
+        setErrorRaw(null)
+        setListUnreachable(false)
       }
       const result = await api.remoteList({
         baseUrl: target.baseUrl,
@@ -112,13 +130,18 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
       })
       if (!result.ok) {
         connectionUnstable.current = true
+        const unreachable = isNetworkReachabilityError(result.error)
         if (!silent) {
           silentFailStreak.current = 0
           setEntries([])
+          setErrorRaw(result.error ?? null)
+          setListUnreachable(unreachable)
           setError(mapIpcError(result.error, 'No se pudo listar el directorio.'))
         } else {
           silentFailStreak.current += 1
           if (silentFailStreak.current >= 2) {
+            setErrorRaw(result.error ?? null)
+            setListUnreachable(unreachable)
             setError(mapIpcError(result.error, 'No se pudo actualizar el directorio.'))
           }
         }
@@ -131,6 +154,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
       })
       setEntries(sorted)
       setError(null)
+      setErrorRaw(null)
+      setListUnreachable(false)
       silentFailStreak.current = 0
       connectionUnstable.current = false
       hasLoadedOnce.current = true
@@ -514,11 +539,19 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
         </div>
       )}
 
-      {error && (
+      {error && listUnreachable && target ? (
+        <PeerReachabilityAlert
+          host={target.host || hostFromBaseUrl(target.baseUrl)}
+          baseUrl={target.baseUrl}
+          hosts={target.hosts}
+          localHosts={target.localHosts}
+          detail={errorRaw}
+        />
+      ) : error ? (
         <div className="state-box error" role="alert">
           {error}
         </div>
-      )}
+      ) : null}
     </section>
   )
 }

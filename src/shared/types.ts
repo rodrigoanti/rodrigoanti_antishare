@@ -15,6 +15,8 @@ export interface Peer {
   tokenRequired: boolean
   lastSeen: number
   baseUrl: string
+  /** Alternate LAN IPv4s for the same peer (try if primary host fails). */
+  hosts?: string[]
   /** True when added via peers:addManual (not pruned by UDP stale timeout). */
   manual?: boolean
 }
@@ -107,6 +109,8 @@ export interface RemoteListRequest {
   baseUrl: string
   path?: string
   token?: string
+  /** Other LAN base URLs to try after a network failure on baseUrl (not HTTP 4xx). */
+  altBaseUrls?: string[]
 }
 
 export interface RemoteDownloadRequest {
@@ -143,7 +147,10 @@ export interface RemoteUploadResult {
 /** Discovery announcement payload (UDP). */
 export interface PeerAnnouncement {
   name: string
-  host: string
+  /** LAN IPv4; omit when none is usable (never 127.0.0.1 / 0.0.0.0). */
+  host?: string
+  /** All usable LAN IPv4s on the announcer. */
+  hosts?: string[]
   port: number
   tokenRequired: boolean
 }

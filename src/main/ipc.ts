@@ -28,6 +28,11 @@ import { remoteDownload, remoteList, remoteUpload } from './remote'
 import { loadSettings, saveSettings } from './settings'
 import { runNetworkDiagnose } from './diagnose'
 import { handlePrepareDrag, handleStartDrag, handleStartDragLocal, ensureDragIconFile } from './drag'
+import { buildShareUrls, getLanIfaces, rankPeerHosts } from './net'
+
+function liveShareUrls(): string[] {
+  return buildShareUrls(DEFAULT_SHARE_PORT).all
+}
 
 let share: ShareServerHandle | null = null
 const discovery = new PeerDiscovery()
@@ -68,7 +73,7 @@ async function startShareInternal(req: ShareStartRequest): Promise<ShareStartRes
       port: DEFAULT_SHARE_PORT,
       tokenRequired: share.tokenRequired
     })
-    return { ok: true, urls: share.urls, port: DEFAULT_SHARE_PORT }
+    return { ok: true, urls: liveShareUrls(), port: DEFAULT_SHARE_PORT }
   } catch (e) {
     return {
       ok: false,
@@ -188,7 +193,7 @@ export function registerIpc(): void {
       running: true,
       folder: share.folder,
       port: DEFAULT_SHARE_PORT,
-      urls: share.urls,
+      urls: liveShareUrls(),
       tokenRequired: share.tokenRequired
     }
   })
@@ -212,7 +217,26 @@ export function registerIpc(): void {
     discovery.removeManual(req)
   )
 
-  ipcMain.handle('remote:list', async (_e, req: RemoteListRequest) => remoteList(req))
+  ipcMain.handle('remote:list', async (_e, req: RemoteListRequest) => {
+    const base = (req.baseUrl || '').replace(/\/+$/, '')
+    const known = discovery.list().find((p) => {
+      if (p.baseUrl.replace(/\/+$/, '') === base) return true
+      return [p.host, ...(p.hosts ?? [])].some((h) => base === `http://${h}:${p.port}`)
+    })
+    if (!known) return remoteList(req)
+
+    const ranked = rankPeerHosts([known.host, ...(known.hosts ?? [])], known.host, getLanIfaces())
+    const urls = ranked.map((h) => `http://${h}:${known.port}`)
+    const primaryUrl = urls[0] || base
+    const altBaseUrls = [...urls.slice(1), ...(req.altBaseUrls ?? [])].filter(
+      (u, i, arr) => u && u !== primaryUrl && arr.indexOf(u) === i
+    )
+    return remoteList({
+      ...req,
+      baseUrl: primaryUrl,
+      altBaseUrls: altBaseUrls.length ? altBaseUrls : undefined
+    })
+  })
   ipcMain.handle('remote:download', async (_e, req: RemoteDownloadRequest) => remoteDownload(req))
   ipcMain.handle('remote:upload', async (_e, req: RemoteUploadRequest) => remoteUpload(req))
 

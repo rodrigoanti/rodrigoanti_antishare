@@ -9,6 +9,22 @@ files:
   - package.json
   - resources/drag-icon.png
 asar: true
+mac:
+  icon: build/icon.png
+  category: public.app-category.utilities
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - dir
+    - dmg
+  artifactName: AntiShare-${version}-mac-${arch}.${ext}
+  extendInfo:
+    NSLocalNetworkUsageDescription: AntiShare descubre otros equipos en tu red local (Wi‑Fi o Ethernet) y comparte carpetas en la LAN. Sin este permiso, los peers no pueden verte ni abrir tu share.
+    NSBonjourServices:
+      - _antishare._udp.
+      - _http._tcp.
 extraResources:
   - from: resources/drag-icon.png
     to: drag-icon.png
@@ -26,6 +42,7 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   allowElevation: true
+  include: build/installer.nsh
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: AntiShare

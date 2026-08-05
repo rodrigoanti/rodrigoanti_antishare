@@ -7,7 +7,7 @@ import {
   type ShareStatus
 } from '../shared/types'
 import type { PeerDiscovery } from './discovery'
-import { getLanIPv4 } from './net'
+import { buildShareUrls, getLanIPv4 } from './net'
 import { loadSettings } from './settings'
 import type { ShareServerHandle } from './shareServer'
 
@@ -96,6 +96,9 @@ function buildSummary(checks: NetworkCheck[]): string {
   if (fails.some((c) => c.id === 'udpDiscovery')) {
     return 'UDP discovery no escucha en 8766. Revisá permisos de red o reiniciá la app.'
   }
+  if (fails.some((c) => c.id.startsWith('peersHttp'))) {
+    return 'Hay peers visibles por UDP 8766 pero HTTP/TCP 8765 falla. Revisá firewall inbound, red de invitados y permiso Red local en macOS.'
+  }
   if (fails.length === 0 && warns.length === 0) {
     const peers = checks.find((c) => c.id === 'peersSeen')
     if (peers && !peers.ok) {
@@ -122,7 +125,7 @@ export async function runNetworkDiagnose(opts: {
         running: true,
         folder: share!.folder,
         port: DEFAULT_SHARE_PORT,
-        urls: share!.urls,
+        urls: buildShareUrls(DEFAULT_SHARE_PORT).all,
         tokenRequired: share!.tokenRequired
       }
     : {
@@ -161,13 +164,16 @@ export async function runNetworkDiagnose(opts: {
       )
     )
   } else {
+    const lanUrls = buildShareUrls(DEFAULT_SHARE_PORT).lan
     checks.push(
       check(
         'lanIp',
         true,
         'info',
         `IP LAN detectada: ${lanIps.join(', ')}.`,
-        'Usá esta IP desde otra máquina en la misma red.'
+        running && lanUrls.length > 0
+          ? `Share alcanzable en: ${lanUrls.join(', ')}.`
+          : 'Usá esta IP desde otra máquina en la misma red.'
       )
     )
   }
@@ -321,6 +327,42 @@ export async function runNetworkDiagnose(opts: {
         'Informativo: iniciá AntiShare en otra máquina de la misma red y esperá unos segundos.'
       )
     )
+  }
+
+  // 8. peersHttp — UDP-visible peers vs TCP/HTTP 8765
+  for (const peer of peers) {
+    const hosts = [peer.host, ...(peer.hosts ?? [])].filter(
+      (h, i, arr) => h && arr.indexOf(h) === i
+    )
+    for (const host of hosts) {
+      const tcpOk = await probeTcp(host, peer.port, 2000)
+      const http = await probeHttp(`http://${host}:${peer.port}/api/list?path=`, undefined, 3500)
+      const id = `peersHttp:${host}:${peer.port}`
+      if (http.ok) {
+        checks.push(
+          check(
+            id,
+            true,
+            'info',
+            `Peer ${peer.name}: UDP visible y HTTP OK en ${host}:${peer.port}.`
+          )
+        )
+        continue
+      }
+      const detail = [
+        tcpOk ? 'TCP ok' : 'TCP falló',
+        http.error ? `HTTP ${http.error}` : 'HTTP falló'
+      ].join(', ')
+      checks.push(
+        check(
+          id,
+          false,
+          'error',
+          `Peer ${peer.name}: visible por UDP 8766 pero HTTP ${peer.port} falló en ${host} (${detail}).`,
+          'Firewall inbound TCP 8765 en esa PC, red de invitados / aislamiento AP, o permiso Red local de macOS. No es un fallo de discovery.'
+        )
+      )
+    }
   }
 
   return {

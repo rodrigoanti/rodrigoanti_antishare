@@ -1,5 +1,6 @@
 /**
  * Two discovery instances with different share ports should see each other.
+ * A single announcing instance must not list itself.
  * Usage: npx tsx scripts/smoke-discovery.ts
  *
  * Uses listen + announce split (no TMPDIR registry).
@@ -11,7 +12,23 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms))
 }
 
+function udpPeers(d: PeerDiscovery) {
+  return d.list().filter((p) => !p.manual)
+}
+
 async function main(): Promise<void> {
+  const solo = new PeerDiscovery()
+  solo.startListening()
+  solo.setAnnounce({ name: 'solo', port: 28771, tokenRequired: false })
+  await sleep(2500)
+  const soloUdp = udpPeers(solo)
+  console.log('solo peers', soloUdp)
+  if (soloUdp.some((p) => p.port === 28771)) {
+    solo.stopListening()
+    throw new Error('solo instance listed itself as a peer')
+  }
+  solo.stopListening()
+
   const a = new PeerDiscovery()
   const b = new PeerDiscovery()
   let bSawA = false
@@ -38,6 +55,13 @@ async function main(): Promise<void> {
   console.log('A peers', a.list())
   console.log('B peers', b.list())
   console.log('aSawB', aSawB, 'bSawA', bSawA)
+
+  if (udpPeers(a).some((p) => p.port === 28765)) {
+    throw new Error('peer-a listed itself')
+  }
+  if (udpPeers(b).some((p) => p.port === 28767)) {
+    throw new Error('peer-b listed itself')
+  }
 
   // Manual join probe against a tiny HTTP peer
   const probe = createServer((_req, res) => {

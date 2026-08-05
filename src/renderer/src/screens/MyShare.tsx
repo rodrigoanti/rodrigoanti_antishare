@@ -1,8 +1,27 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { ShareStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
-import { Button, Input } from '../ui'
+import { Alert, Button, Input } from '../ui'
 import { NetworkStatus } from './NetworkStatus'
+
+function isLoopbackShareUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  } catch {
+    return /(?:^|\/\/)(?:127\.0\.0\.1|localhost|\[::1\])/i.test(url)
+  }
+}
+
+function splitShareUrls(urls: string[]): { lan: string[]; local: string[] } {
+  const lan: string[] = []
+  const local: string[] = []
+  for (const url of urls) {
+    if (isLoopbackShareUrl(url)) local.push(url)
+    else lan.push(url)
+  }
+  return { lan, local }
+}
 
 interface ShareSettingsProps {
   onOpenLocal?: () => void
@@ -147,6 +166,8 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
 
   const running = status?.running ?? false
   const urls = status?.urls ?? []
+  const { lan: lanUrls, local: localUrls } = useMemo(() => splitShareUrls(urls), [urls])
+  const missingLan = running && lanUrls.length === 0
 
   return (
     <div className="settings-body">
@@ -206,7 +227,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
               Detener
             </Button>
           )}
-          {running && urls.length > 0 && onOpenLocal && (
+          {running && onOpenLocal && (
             <Button variant="ghost" size="md" onClick={onOpenLocal}>
               Abrir mi carpeta
             </Button>
@@ -220,17 +241,55 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
         {status?.tokenRequired && <span className="badge">Token activo</span>}
       </div>
 
-      {running && urls.length > 0 && (
-        <ul className="url-list" aria-label="URLs de acceso">
-          {urls.map((url) => (
-            <li key={url} className="url-item">
-              <span className="mono">{url}</span>
-              <Button variant="ghost" size="sm" onClick={() => void copyUrl(url)}>
-                {copied === url ? 'Copiado' : 'Copiar'}
-              </Button>
-            </li>
-          ))}
-        </ul>
+      {running && (
+        <div className="url-groups">
+          {missingLan && (
+            <Alert variant="warning" title="Sin IP de red">
+              Otras PCs no van a poder entrar: no hay una dirección LAN usable (solo localhost).
+              Revisá Wi‑Fi o Ethernet, el permiso de Red local en macOS, y que el diagnóstico de
+              red vea una IP LAN.
+            </Alert>
+          )}
+
+          {lanUrls.length > 0 && (
+            <div className="url-group">
+              <h3 className="url-group-title" id="lan-urls-title">
+                En la red — para otras PCs
+              </h3>
+              <p className="url-group-hint">
+                Compartí esta dirección con la otra máquina. 127.0.0.1 no sirve fuera de esta PC.
+              </p>
+              <ul className="url-list" aria-labelledby="lan-urls-title">
+                {lanUrls.map((url) => (
+                  <li key={url} className="url-item url-item-lan">
+                    <span className="mono">{url}</span>
+                    <Button variant="secondary" size="sm" onClick={() => void copyUrl(url)}>
+                      {copied === url ? 'Copiado' : 'Copiar'}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {localUrls.length > 0 && (
+            <div className="url-group">
+              <h3 className="url-group-title" id="local-urls-title">
+                Solo esta máquina
+              </h3>
+              <p className="url-group-hint">
+                Localhost y 127.0.0.1 solo abren acá. Otras PCs no pueden usarlas.
+              </p>
+              <ul className="url-list" aria-labelledby="local-urls-title">
+                {localUrls.map((url) => (
+                  <li key={url} className="url-item url-item-local">
+                    <span className="mono">{url}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       )}
 
       {error && (

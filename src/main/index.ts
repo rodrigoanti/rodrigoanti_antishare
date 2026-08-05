@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { registerIpc, restoreAutoStart, shutdownShare } from './ipc'
+import { requestLocalNetworkAccess } from './localNetworkAccess'
 
 function resolveAppIcon(): string | undefined {
   const candidates = [
@@ -28,7 +29,10 @@ function createWindow(): void {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    win.show()
+    requestLocalNetworkAccess()
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }

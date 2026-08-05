@@ -3,15 +3,17 @@ import { createWriteStream, createReadStream, existsSync, statSync } from 'fs'
 import { basename, extname, join } from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
-import type {
-  DirEntry,
-  RemoteDownloadRequest,
-  RemoteDownloadResult,
-  RemoteListRequest,
-  RemoteListResult,
-  RemoteUploadRequest,
-  RemoteUploadResult
+import {
+  DEFAULT_SHARE_PORT,
+  type DirEntry,
+  type RemoteDownloadRequest,
+  type RemoteDownloadResult,
+  type RemoteListRequest,
+  type RemoteListResult,
+  type RemoteUploadRequest,
+  type RemoteUploadResult
 } from '../shared/types'
+import { getLanIPv4, hostOnLocalSubnet, getLanIfaces, normalizeHost } from './net'
 
 const LIST_TIMEOUT_MS = 8_000
 const TRANSFER_TIMEOUT_MS = 120_000
@@ -20,15 +22,60 @@ function authHeaders(token?: string): Record<string, string> {
   return token ? { 'X-Share-Token': token } : {}
 }
 
+function errorHaystack(err: unknown): string {
+  const parts: string[] = []
+  let cur: unknown = err
+  for (let i = 0; i < 5 && cur; i++) {
+    if (cur instanceof Error) {
+      parts.push(cur.message)
+      const code = (cur as NodeJS.ErrnoException).code
+      if (code) parts.push(code)
+      cur = cur.cause
+    } else {
+      parts.push(String(cur))
+      break
+    }
+  }
+  return parts.join(' ').toLowerCase()
+}
+
+export function classifyPeerNetworkError(
+  err: unknown,
+  target: { host: string; port: number; baseUrl: string }
+): string {
+  const hay = errorHaystack(err)
+  const where = `${target.host}:${target.port}`
+  const hint =
+    `El peer se ve por discovery (UDP 8766) pero no responde en TCP ${target.port}. ` +
+    `Probá: firewall inbound TCP ${target.port} en esa PC; no uses red de invitados / aislamiento AP; ` +
+    `en macOS, permití AntiShare en Red local.`
+
+  if (
+    hay.includes('timeout') ||
+    hay.includes('timed out') ||
+    hay.includes('aborted') ||
+    hay.includes('aborterror')
+  ) {
+    return `Tiempo agotado al abrir ${target.baseUrl} (${where}). ${hint}`
+  }
+  if (hay.includes('econnrefused')) {
+    return `Conexión rechazada en ${where} (ECONNREFUSED). Nadie acepta TCP ${target.port} o el firewall lo corta. ${hint}`
+  }
+  if (hay.includes('enetunreach') || hay.includes('ehostunreach')) {
+    return `La red no alcanza ${where} (ENETUNREACH). Distinta subred o Wi‑Fi invitado. ${hint}`
+  }
+  if (hay.includes('enotfound') || hay.includes('eai_again')) {
+    return `No se resolvió el host ${target.host}. ${hint}`
+  }
+  if (hay.includes('fetch failed') || hay.includes('network') || hay.includes('und_err')) {
+    return `Fallo de red hacia ${target.baseUrl} (fetch failed). ${hint}`
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  return `${msg} (${where}). ${hint}`
+}
+
 function isRetryableNetworkError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
-  const cause =
-    err instanceof Error && err.cause instanceof Error
-      ? err.cause.message.toLowerCase()
-      : err instanceof Error && err.cause
-        ? String(err.cause).toLowerCase()
-        : ''
-  const hay = `${msg} ${cause}`
+  const hay = errorHaystack(err)
   return (
     hay.includes('fetch failed') ||
     hay.includes('econnreset') ||
@@ -42,6 +89,18 @@ function isRetryableNetworkError(err: unknown): boolean {
     hay.includes('aborted') ||
     hay.includes('timeout')
   )
+}
+
+function parseShareBase(baseUrl: string): { baseUrl: string; host: string; port: number } {
+  const trimmed = (baseUrl || '').replace(/\/+$/, '')
+  try {
+    const u = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`)
+    const host = normalizeHost(u.hostname)
+    const port = u.port ? Number(u.port) : DEFAULT_SHARE_PORT
+    return { baseUrl: `${u.protocol}//${host}${u.port ? `:${u.port}` : ''}`, host, port }
+  } catch {
+    return { baseUrl: trimmed, host: normalizeHost(trimmed), port: DEFAULT_SHARE_PORT }
+  }
 }
 
 /** LAN peer fetch with timeout; one retry on stale keep-alive / reset races. */
@@ -94,29 +153,55 @@ function defaultDownloadsDest(remotePath: string): string {
 }
 
 export async function remoteList(req: RemoteListRequest): Promise<RemoteListResult> {
-  try {
-    const base = req.baseUrl.replace(/\/$/, '')
-    const path = req.path || ''
-    const url = `${base}/api/list?path=${encodeURIComponent(path)}`
-    const res = await peerFetch(url, {
-      headers: authHeaders(req.token),
-      timeoutMs: LIST_TIMEOUT_MS,
-      retries: 1
-    })
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string }
-      return {
-        ok: false,
-        error: body.error || `No se pudo listar el peer (HTTP ${res.status}).`
+  const bases = [req.baseUrl, ...(req.altBaseUrls ?? [])]
+    .map((b) => (b || '').replace(/\/+$/, ''))
+    .filter((b, i, arr) => b && arr.indexOf(b) === i)
+  if (bases.length === 0) {
+    return { ok: false, error: 'Falta la URL del peer.' }
+  }
+
+  const path = req.path || ''
+  let lastError: unknown
+  let lastTarget = parseShareBase(bases[0])
+
+  for (const candidate of bases) {
+    const target = parseShareBase(candidate)
+    lastTarget = target
+    try {
+      const url = `${target.baseUrl}/api/list?path=${encodeURIComponent(path)}`
+      const res = await peerFetch(url, {
+        headers: authHeaders(req.token),
+        timeoutMs: LIST_TIMEOUT_MS,
+        retries: 0
+      })
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        return {
+          ok: false,
+          error: body.error || `No se pudo listar el peer (HTTP ${res.status}).`
+        }
       }
+      const entries = (await res.json()) as DirEntry[]
+      return { ok: true, entries }
+    } catch (e) {
+      lastError = e
     }
-    const entries = (await res.json()) as DirEntry[]
-    return { ok: true, entries }
-  } catch (e) {
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : 'No se pudo conectar al peer.'
-    }
+  }
+
+  const peerIps = bases.map((b) => parseShareBase(b).host).filter(Boolean)
+  const localIps = getLanIPv4()
+  const localIfaces = getLanIfaces()
+  const sameSubnet = peerIps.filter((h) => hostOnLocalSubnet(h, localIfaces))
+  const classified = classifyPeerNetworkError(lastError, lastTarget)
+  const subnetNote =
+    sameSubnet.length === 0 && peerIps.length > 0
+      ? ' Ninguna IP del peer está en la misma subred local.'
+      : ''
+  return {
+    ok: false,
+    error:
+      `${classified} IPs locales: ${localIps.join(', ') || '(ninguna)'}. ` +
+      `IPs del peer: ${peerIps.join(', ') || lastTarget.host}.${subnetNote}`
   }
 }
 
@@ -150,7 +235,7 @@ export async function remoteDownload(req: RemoteDownloadRequest): Promise<Remote
   } catch (e) {
     return {
       ok: false,
-      error: e instanceof Error ? e.message : 'Error al guardar la descarga.'
+      error: classifyPeerNetworkError(e, parseShareBase(req.baseUrl))
     }
   }
 }
@@ -203,7 +288,7 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
   } catch (e) {
     return {
       ok: false,
-      error: e instanceof Error ? e.message : 'Error al subir el archivo.'
+      error: classifyPeerNetworkError(e, parseShareBase(req.baseUrl))
     }
   }
 }

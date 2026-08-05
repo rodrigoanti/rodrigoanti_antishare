@@ -9,9 +9,10 @@ import {
   type ReactElement
 } from 'react'
 import type { DirEntry, Peer, ShareStatus } from '../../../shared/types'
-import { getApi, mapIpcError } from '../api'
+import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
 import { Alert, Button, Input, Modal } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
+import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
 
 const VIEW_KEY = 'antishare.finderView'
 
@@ -68,6 +69,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorRaw, setErrorRaw] = useState<string | null>(null)
+  const [listUnreachable, setListUnreachable] = useState(false)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [pendingPeer, setPendingPeer] = useState<Peer | null>(null)
   const [tokenDraft, setTokenDraft] = useState('')
@@ -86,6 +89,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   )
 
   const running = status?.running ?? false
+  const localLanHosts = useMemo(() => lanHostsFromShareUrls(status?.urls), [status?.urls])
 
   useEffect(() => {
     if (!pendingPeer) return
@@ -165,6 +169,9 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       if (nav.kind === 'root') {
         setEntries([])
         setLoading(false)
+        setError(null)
+        setErrorRaw(null)
+        setListUnreachable(false)
         hasLoadedOnce.current = true
         silentFailStreak.current = 0
         connectionUnstable.current = false
@@ -174,12 +181,16 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       if (!silent) {
         setLoading(true)
         setError(null)
+        setErrorRaw(null)
+        setListUnreachable(false)
       }
       let result: { ok: boolean; entries?: DirEntry[]; error?: string }
       if (nav.kind === 'local') {
         if (!running) {
           setEntries([])
           setError('Todavía no estás compartiendo.')
+          setErrorRaw(null)
+          setListUnreachable(false)
           setLoading(false)
           connectionUnstable.current = true
           return false
@@ -194,14 +205,19 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       }
       if (!result.ok) {
         connectionUnstable.current = true
+        const unreachable = nav.kind === 'peer' && isNetworkReachabilityError(result.error)
         if (!silent) {
           silentFailStreak.current = 0
           setEntries([])
+          setErrorRaw(result.error ?? null)
+          setListUnreachable(unreachable)
           setError(mapIpcError(result.error, 'No se pudo listar el contenido.'))
         } else {
           // Transient LAN / keep-alive races: keep last listing; only surface after streaks.
           silentFailStreak.current += 1
           if (silentFailStreak.current >= 2) {
+            setErrorRaw(result.error ?? null)
+            setListUnreachable(unreachable)
             setError(mapIpcError(result.error, 'No se pudo actualizar.'))
           }
         }
@@ -214,6 +230,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       })
       setEntries(sorted)
       setError(null)
+      setErrorRaw(null)
+      setListUnreachable(false)
       silentFailStreak.current = 0
       connectionUnstable.current = false
       hasLoadedOnce.current = true
@@ -709,11 +727,19 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         </div>
       )}
 
-      {error && (
+      {error && listUnreachable && nav.kind === 'peer' ? (
+        <PeerReachabilityAlert
+          host={nav.peer.host}
+          baseUrl={nav.peer.baseUrl}
+          hosts={nav.peer.hosts}
+          localHosts={localLanHosts}
+          detail={errorRaw}
+        />
+      ) : error ? (
         <div className="state-box error" role="alert">
           {error}
         </div>
-      )}
+      ) : null}
 
       <Modal
         open={Boolean(pendingPeer)}
