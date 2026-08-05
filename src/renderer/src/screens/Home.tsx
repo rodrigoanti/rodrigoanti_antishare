@@ -8,10 +8,10 @@ import {
   type FormEvent,
   type ReactElement
 } from 'react'
-import type { DirEntry, Peer, ShareStatus } from '../../../shared/types'
+import { PEER_STALE_MS, type DirEntry, type Peer, type ShareStatus } from '../../../shared/types'
 import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
 import { isOsFileDrag, markInternalDrag, osDropPaths } from '../osDrop'
-import { Alert, Button, ContextMenu, Input, LockBadge, Modal } from '../ui'
+import { Button, ContextMenu, Input, LockBadge, Modal, toast } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
 import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
 
@@ -29,7 +29,7 @@ interface HomeProps {
 
 function isFresh(peer: Peer): boolean {
   if (!peer.lastSeen) return true
-  return Date.now() - peer.lastSeen < 30_000
+  return Date.now() - peer.lastSeen < PEER_STALE_MS
 }
 
 function joinPath(parent: string, name: string): string {
@@ -41,7 +41,8 @@ function formatSize(bytes: number, isDir: boolean): string {
   if (isDir) return '—'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 function formatMtime(ms: number): string {
@@ -77,7 +78,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [peers, setPeers] = useState<Peer[]>([])
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [listFailed, setListFailed] = useState(false)
   const [errorRaw, setErrorRaw] = useState<string | null>(null)
   const [listUnreachable, setListUnreachable] = useState(false)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -88,7 +89,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const [dragBusyPath, setDragBusyPath] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [dropActive, setDropActive] = useState(false)
-  const [savedDownload, setSavedDownload] = useState<{ path: string; name: string } | null>(null)
   const [renameMode, setRenameMode] = useState<
     { kind: 'existing'; path: string; value: string } | { kind: 'create'; value: string } | null
   >(null)
@@ -104,7 +104,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
   const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
     new Map()
   )
-  const suppressClickRef = useRef(false)
   const dropDepthRef = useRef(0)
   const renameCommitLock = useRef(false)
 
@@ -189,7 +188,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       if (nav.kind === 'root') {
         setEntries([])
         setLoading(false)
-        setError(null)
+        setListFailed(false)
         setErrorRaw(null)
         setListUnreachable(false)
         hasLoadedOnce.current = true
@@ -200,7 +199,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       const silent = opts?.silent === true
       if (!silent) {
         setLoading(true)
-        setError(null)
+        setListFailed(false)
         setErrorRaw(null)
         setListUnreachable(false)
       }
@@ -208,11 +207,12 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       if (nav.kind === 'local') {
         if (!running) {
           setEntries([])
-          setError('Todavía no estás compartiendo.')
+          setListFailed(true)
           setErrorRaw(null)
           setListUnreachable(false)
           setLoading(false)
           connectionUnstable.current = true
+          if (!silent) toast.error('Todavía no estás compartiendo.')
           return false
         }
         result = await api.listLocal({ path: nav.path || undefined })
@@ -231,14 +231,17 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           setEntries([])
           setErrorRaw(result.error ?? null)
           setListUnreachable(unreachable)
-          setError(mapIpcError(result.error, 'No se pudo listar el contenido.'))
+          setListFailed(true)
+          if (!unreachable) {
+            toast.error(mapIpcError(result.error, 'No se pudo listar el contenido.'))
+          }
         } else {
-          // Transient LAN / keep-alive races: keep last listing; only surface after streaks.
+          // Transient LAN / keep-alive races: keep last listing; surface panel after streaks.
           silentFailStreak.current += 1
           if (silentFailStreak.current >= 2) {
             setErrorRaw(result.error ?? null)
             setListUnreachable(unreachable)
-            setError(mapIpcError(result.error, 'No se pudo actualizar.'))
+            setListFailed(true)
           }
         }
         if (!silent) setLoading(false)
@@ -249,7 +252,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         return a.name.localeCompare(b.name, 'es')
       })
       setEntries(sorted)
-      setError(null)
+      setListFailed(false)
       setErrorRaw(null)
       setListUnreachable(false)
       silentFailStreak.current = 0
@@ -269,6 +272,9 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     setRenameMode(null)
     setMenu(null)
     setPendingDelete(null)
+    setListFailed(false)
+    setListUnreachable(false)
+    setErrorRaw(null)
     preparedDragRef.current.clear()
 
     if (nav.kind === 'root') {
@@ -435,14 +441,14 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     }
     renameCommitLock.current = true
     setOpBusy(true)
-    setError(null)
+    const creating = renameMode.kind === 'create'
     try {
       const result =
         nav.kind === 'local'
-          ? renameMode.kind === 'create'
+          ? creating
             ? await api.mkdirLocal({ path: nav.path || undefined, name })
             : await api.renameLocal({ path: renameMode.path, newName: name })
-          : renameMode.kind === 'create'
+          : creating
             ? await api.remoteMkdir({
                 baseUrl: nav.peer.baseUrl,
                 path: nav.path || undefined,
@@ -457,23 +463,21 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               })
       if (!result.ok) {
         renameCommitLock.current = false
-        setError(
-          mapIpcError(
-            result.error,
-            renameMode.kind === 'create' ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.'
-          )
+        toast.error(
+          mapIpcError(result.error, creating ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.')
         )
         return
       }
       setRenameMode(null)
       setSelectedKey(joinPath(nav.path, name))
       await loadContents({ silent: true })
+      toast.success(creating ? 'Carpeta creada' : 'Renombrado')
     } catch (err) {
       renameCommitLock.current = false
-      setError(
+      toast.error(
         mapIpcError(
           err instanceof Error ? err.message : String(err),
-          renameMode.kind === 'create' ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.'
+          creating ? 'No se pudo crear la carpeta.' : 'No se pudo renombrar.'
         )
       )
     } finally {
@@ -485,7 +489,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     if (!pendingDelete || nav.kind === 'root') return
     const entry = pendingDelete
     setOpBusy(true)
-    setError(null)
     try {
       const result =
         nav.kind === 'local'
@@ -496,14 +499,15 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               token: nav.token
             })
       if (!result.ok) {
-        setError(mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`))
+        toast.error(mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`))
         return
       }
       setPendingDelete(null)
       if (selectedKey === entry.path) setSelectedKey(null)
       await loadContents({ silent: true })
+      toast.success('Eliminado')
     } catch (err) {
-      setError(
+      toast.error(
         mapIpcError(
           err instanceof Error ? err.message : String(err),
           `No se pudo eliminar «${entry.name}».`
@@ -511,6 +515,13 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       )
     } finally {
       setOpBusy(false)
+    }
+  }
+
+  async function revealDownload(path: string): Promise<void> {
+    const result = await api.showItemInFolder(path)
+    if (!result.ok) {
+      toast.error(mapIpcError(result.error, 'No se pudo mostrar el archivo.'))
     }
   }
 
@@ -522,10 +533,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       if (nav.kind === 'peer') setNav({ kind: 'peer', peer: nav.peer, path: nextPath, token: nav.token })
       return
     }
-    // file download
     setBusyFile(entry.path)
-    setError(null)
-    setSavedDownload(null)
     if (nav.kind === 'local') {
       const baseUrl = status?.urls?.[0]?.replace(/\/+$/, '')
       if (!baseUrl) {
@@ -539,9 +547,15 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         token: settings.token
       })
       if (!result.ok) {
-        setError(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
+        toast.error(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
       } else if (result.destPath) {
-        setSavedDownload({ path: result.destPath, name: entry.name })
+        const destPath = result.destPath
+        toast.success('Guardado en Descargas', {
+          action: {
+            label: 'Mostrar',
+            onClick: () => void revealDownload(destPath)
+          }
+        })
       }
     } else if (nav.kind === 'peer') {
       const result = await api.remoteDownload({
@@ -550,20 +564,18 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         token: nav.token
       })
       if (!result.ok) {
-        setError(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
+        toast.error(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
       } else if (result.destPath) {
-        setSavedDownload({ path: result.destPath, name: entry.name })
+        const destPath = result.destPath
+        toast.success('Guardado en Descargas', {
+          action: {
+            label: 'Mostrar',
+            onClick: () => void revealDownload(destPath)
+          }
+        })
       }
     }
     setBusyFile(null)
-  }
-
-  async function revealSavedDownload(): Promise<void> {
-    if (!savedDownload) return
-    const result = await api.showItemInFolder(savedDownload.path)
-    if (!result.ok) {
-      setError(mapIpcError(result.error, 'No se pudo mostrar el archivo en la carpeta.'))
-    }
   }
 
   function prepareEntryDrag(entry: DirEntry): void {
@@ -572,7 +584,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     if (existing?.filePath || existing?.promise) return
 
     setDragBusyPath(entry.path)
-    setError(null)
     const promise = (async (): Promise<string | null> => {
       try {
         const result =
@@ -590,7 +601,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                 isDir: entry.isDir
               })
         if (!result.ok || !result.filePath) {
-          setError(
+          toast.error(
             mapIpcError(result.error, `No se pudo preparar «${entry.name}» para arrastrar.`)
           )
           preparedDragRef.current.delete(entry.path)
@@ -603,7 +614,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         })
         return result.filePath
       } catch (err) {
-        setError(
+        toast.error(
           mapIpcError(
             err instanceof Error ? err.message : String(err),
             `No se pudo preparar «${entry.name}» para arrastrar.`
@@ -629,18 +640,12 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
       e.preventDefault()
       return
     }
-    suppressClickRef.current = true
     markInternalDrag(e.dataTransfer)
-    setError(null)
     const result = api.startDragLocal(filePath, { isDir: entry.isDir })
     if (!result.ok) {
       e.preventDefault()
-      suppressClickRef.current = false
-      setError(
-        mapIpcError(
-          result.error,
-          `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`
-        )
+      toast.error(
+        mapIpcError(result.error, `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`)
       )
     }
   }
@@ -678,18 +683,18 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
     if (nav.kind === 'root') return
     const sources = osDropPaths(dt)
     if (sources.length === 0) {
-      setError('No se pudo leer la ruta local. Arrastrá desde el Finder o el Explorador.')
+      toast.error('No se pudo leer la ruta local.')
       return
     }
     setImporting(true)
-    setError(null)
     try {
       if (nav.kind === 'local') {
         const result = await api.importLocal({ sources, destPath: nav.path || undefined })
         if (!result.ok) {
-          setError(mapIpcError(result.error, 'No se pudo importar.'))
+          toast.error(mapIpcError(result.error, 'No se pudo importar.'))
           return
         }
+        toast.success(sources.length === 1 ? 'Importado' : `${sources.length} importados`)
       } else {
         const result = await api.importRemote({
           baseUrl: nav.peer.baseUrl,
@@ -698,13 +703,14 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           token: nav.token
         })
         if (!result.ok) {
-          setError(mapIpcError(result.error, 'No se pudo subir al peer.'))
+          toast.error(mapIpcError(result.error, 'No se pudo subir al peer.'))
           return
         }
+        toast.success(sources.length === 1 ? 'Subido' : `${sources.length} subidos`)
       }
       await loadContents({ silent: true })
     } catch (err) {
-      setError(
+      toast.error(
         mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
       )
     } finally {
@@ -868,7 +874,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
               <span />
             </div>
           )}
-          {!showLoading && entries.length === 0 && !error && renameMode?.kind !== 'create' && (
+          {!showLoading && entries.length === 0 && !listFailed && renameMode?.kind !== 'create' && (
             <div className="state-box empty">Esta carpeta está vacía.</div>
           )}
           {!showLoading && (entries.length > 0 || renameMode?.kind === 'create') && (
@@ -926,10 +932,10 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                     sizeLabel={formatSize(entry.size, entry.isDir)}
                     dragPreparing={dragBusyPath === entry.path}
                     onClick={() => {
-                      if (suppressClickRef.current) {
-                        suppressClickRef.current = false
-                        return
-                      }
+                      if (renameMode) return
+                      setSelectedKey(entry.path)
+                    }}
+                    onDoubleClick={() => {
                       if (renameMode) return
                       void openEntry(entry)
                     }}
@@ -939,7 +945,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
                       setMenu({ x: e.clientX, y: e.clientY, entry })
                     }}
                     onPointerDown={() => {
-                      suppressClickRef.current = false
                       if (!renameMode) prepareEntryDrag(entry)
                     }}
                     onDragStart={(e) => handleEntryDragStart(entry, e)}
@@ -951,25 +956,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         </div>
       )}
 
-      {savedDownload && (
-        <div className="download-toast" role="status">
-          <Alert variant="success" title="Guardado en Descargas">
-            <p className="download-toast-path mono" title={savedDownload.path}>
-              {savedDownload.path}
-            </p>
-            <div className="download-toast-actions">
-              <Button variant="secondary" size="sm" onClick={() => void revealSavedDownload()}>
-                Mostrar en carpeta
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setSavedDownload(null)}>
-                Cerrar
-              </Button>
-            </div>
-          </Alert>
-        </div>
-      )}
-
-      {error && listUnreachable && nav.kind === 'peer' ? (
+      {listUnreachable && nav.kind === 'peer' ? (
         <PeerReachabilityAlert
           host={nav.peer.host}
           baseUrl={nav.peer.baseUrl}
@@ -979,10 +966,6 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           peerName={nav.peer.name}
           onRetry={() => loadContents({ silent: false })}
         />
-      ) : error ? (
-        <div className="state-box error" role="alert">
-          {error}
-        </div>
       ) : null}
 
       <ContextMenu
@@ -1044,7 +1027,7 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           setTokenDraft('')
           setTokenError(null)
         }}
-        title="Clave"
+        title={pendingPeer?.name ?? 'Clave'}
         size="sm"
         footer={
           <>
@@ -1066,26 +1049,20 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
         }
       >
         <form id="peer-token-form" className="form-grid" onSubmit={confirmToken}>
-          <p className="panel-sub" style={{ margin: 0 }}>
-            {pendingPeer ? `«${pendingPeer.name}» pide una clave para ver su carpeta.` : null}
-          </p>
-          <div className="field">
-            <label htmlFor="peer-token">Clave</label>
-            <Input
-              ref={tokenInputRef}
-              id="peer-token"
-              type="password"
-              autoComplete="off"
-              value={tokenDraft}
-              onChange={(e) => setTokenDraft(e.target.value)}
-              placeholder="Ingresá la clave"
-            />
-          </div>
-          {tokenError && (
-            <div className="state-box error" role="alert">
+          <Input
+            ref={tokenInputRef}
+            id="peer-token"
+            type="password"
+            autoComplete="off"
+            aria-label="Clave"
+            value={tokenDraft}
+            onChange={(e) => setTokenDraft(e.target.value)}
+          />
+          {tokenError ? (
+            <p className="muted" role="alert" style={{ margin: 0 }}>
               {tokenError}
-            </div>
-          )}
+            </p>
+          ) : null}
         </form>
       </Modal>
     </section>

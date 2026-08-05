@@ -1,0 +1,64 @@
+export type ToastVariant = 'success' | 'error' | 'warning'
+
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
+export interface ToastShowOptions {
+  action?: ToastAction
+  /** Auto-dismiss ms. Default 4500. Pass 0 to keep until dismissed. */
+  duration?: number
+}
+
+export interface ToastItem {
+  id: string
+  variant: ToastVariant
+  message: string
+  action?: ToastAction
+  duration: number
+}
+
+type Listener = (items: ToastItem[]) => void
+
+const DEFAULT_DURATION = 4500
+const listeners = new Set<Listener>()
+let items: ToastItem[] = []
+let seq = 0
+
+function emit(): void {
+  const snapshot = items.slice()
+  for (const listener of listeners) listener(snapshot)
+}
+
+function push(variant: ToastVariant, message: string, opts?: ToastShowOptions): string {
+  const text = message.trim()
+  if (!text) return ''
+  const id = `toast-${Date.now()}-${++seq}`
+  const duration = opts?.duration ?? DEFAULT_DURATION
+  items = [...items, { id, variant, message: text, action: opts?.action, duration }]
+  emit()
+  return id
+}
+
+function dismiss(id: string): void {
+  const next = items.filter((t) => t.id !== id)
+  if (next.length === items.length) return
+  items = next
+  emit()
+}
+
+export const toast = {
+  success: (message: string, opts?: ToastShowOptions): string => push('success', message, opts),
+  error: (message: string, opts?: ToastShowOptions): string => push('error', message, opts),
+  warning: (message: string, opts?: ToastShowOptions): string => push('warning', message, opts),
+  dismiss
+}
+
+export function subscribeToasts(listener: Listener): () => void {
+  listeners.add(listener)
+  listener(items.slice())
+  return () => {
+    listeners.delete(listener)
+  }
+}

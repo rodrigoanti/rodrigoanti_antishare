@@ -121,7 +121,7 @@ export async function runNetworkDiagnose(opts: {
   const { share, discovery } = opts
   const settings = loadSettings()
   const token = settings.token
-  const running = Boolean(share)
+  const running = share != null && share.address !== null
   const status: ShareStatus = running
     ? {
         running: true,

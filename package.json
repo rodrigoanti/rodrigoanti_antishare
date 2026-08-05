@@ -13,6 +13,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "smoke:transport": "tsx scripts/smoke-transport.ts",
     "smoke:peers": "tsx scripts/smoke-peers.ts",
+    "smoke:discovery": "tsx scripts/smoke-discovery.ts",
+    "smoke:share": "tsx scripts/smoke-share.ts",
     "smoke:drag": "tsx scripts/smoke-drag.ts",
     "smoke:import": "tsx scripts/smoke-import.ts",
     "smoke:fsops": "tsx scripts/smoke-fsops.ts",
@@ -35,6 +37,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^31.3.1",
     "electron-builder": "^25.1.8",
+    "tsx": "^4.23.8",
     "typescript": "^5.5.4",
     "vite": "^5.3.5"
   }

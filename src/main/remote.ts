@@ -138,7 +138,7 @@ function nodeHttpOnce(
   init: {
     method?: string
     headers?: Record<string, string>
-    body?: Buffer | string
+    body?: Buffer | string | Readable
     timeoutMs: number
     localAddress?: string
     stream?: boolean
@@ -191,7 +191,13 @@ function nodeHttpOnce(
       req.destroy(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT' }))
     })
     req.on('error', reject)
-    if (init.body) req.write(init.body)
+
+    const body = init.body
+    if (body && typeof body === 'object' && typeof (body as Readable).pipe === 'function') {
+      void pipeline(body as Readable, req).catch(reject)
+      return
+    }
+    if (body) req.write(body as Buffer | string)
     req.end()
   })
 }
@@ -202,7 +208,7 @@ export async function peerHttp(
   init: {
     method?: string
     headers?: Record<string, string>
-    body?: Buffer | string
+    body?: Buffer | string | Readable
     timeoutMs?: number
     stream?: boolean
   } = {}
@@ -352,23 +358,25 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
       'utf8'
     )
     const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
-    const fileBuf = await new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = []
+    const contentLength = preamble.length + st.size + epilogue.length
+
+    async function* multipartBody(): AsyncGenerator<Buffer> {
+      yield preamble
       const rs = createReadStream(req.filePath)
-      rs.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
-      rs.on('end', () => resolve(Buffer.concat(chunks)))
-      rs.on('error', reject)
-    })
-    const body = Buffer.concat([preamble, fileBuf, epilogue])
+      for await (const chunk of rs) {
+        yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      }
+      yield epilogue
+    }
 
     const res = await peerHttp(url, {
       method: 'POST',
       headers: {
         ...authHeaders(req.token),
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': String(body.length)
+        'Content-Length': String(contentLength)
       },
-      body,
+      body: Readable.from(multipartBody()),
       timeoutMs: TRANSFER_TIMEOUT_MS
     })
     if (!res.ok) {

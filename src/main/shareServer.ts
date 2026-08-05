@@ -391,6 +391,11 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
     tokenRequired: Boolean(opts.token),
     stop: () =>
       new Promise((resolveStop, reject) => {
+        // Drop idle keep-alive sockets so close() resolves immediately (prod keepAliveTimeout stays).
+        const closeAll = (
+          server as Server & { closeAllConnections?: () => void }
+        ).closeAllConnections
+        if (typeof closeAll === 'function') closeAll.call(server)
         server.close((err) => (err ? reject(err) : resolveStop()))
       })
   }

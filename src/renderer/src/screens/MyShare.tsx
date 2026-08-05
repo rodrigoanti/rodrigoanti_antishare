@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { ShareStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
-import { Alert, Button, Input, LockBadge } from '../ui'
+import { Alert, Button, Input, LockBadge, toast } from '../ui'
 import { NetworkStatus } from './NetworkStatus'
 
 function isLoopbackShareUrl(url: string): boolean {
@@ -35,8 +35,6 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
   const [autoStart, setAutoStart] = useState(false)
   const [status, setStatus] = useState<ShareStatus | null>(null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [copied, setCopied] = useState<string | null>(null)
   const [restoredNote, setRestoredNote] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const saveTimer = useRef<number | null>(null)
@@ -55,7 +53,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       const next = await api.shareStatus()
       applyStatus(next)
     } catch (e) {
-      setError(mapIpcError(e instanceof Error ? e.message : String(e), 'No se pudo leer el estado.'))
+      toast.error(mapIpcError(e instanceof Error ? e.message : String(e), 'No se pudo leer el estado.'))
     }
   }, [api, applyStatus])
 
@@ -72,7 +70,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       }
       setHydrated(true)
     } catch (e) {
-      setError(
+      toast.error(
         mapIpcError(e instanceof Error ? e.message : String(e), 'No se pudo cargar la configuración.')
       )
       setHydrated(true)
@@ -108,7 +106,6 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
   }, [api, folder, token, autoStart, hydrated])
 
   async function pickFolder(): Promise<void> {
-    setError(null)
     const path = await api.selectFolder()
     if (path) {
       setFolder(path)
@@ -118,9 +115,8 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
 
   async function onStart(): Promise<void> {
     setBusy(true)
-    setError(null)
     if (!folder.trim()) {
-      setError('Elegí una carpeta para compartir.')
+      toast.error('Elegí una carpeta para compartir.')
       setBusy(false)
       return
     }
@@ -129,11 +125,12 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       token: token.trim() || undefined
     })
     if (!result.ok) {
-      setError(mapIpcError(result.error, 'No se pudo iniciar el share.'))
+      toast.error(mapIpcError(result.error, 'No se pudo iniciar el share.'))
     } else {
       skipNextSave.current = true
       setAutoStart(true)
       setRestoredNote(false)
+      toast.success('Compartiendo')
     }
     await refreshStatus()
     setBusy(false)
@@ -141,14 +138,14 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
 
   async function onStop(): Promise<void> {
     setBusy(true)
-    setError(null)
     const result = await api.stopShare()
     if (!result.ok) {
-      setError(mapIpcError(result.error, 'No se pudo detener el share.'))
+      toast.error(mapIpcError(result.error, 'No se pudo detener el share.'))
     } else {
       skipNextSave.current = true
       setAutoStart(false)
       setRestoredNote(false)
+      toast.success('Detenido')
     }
     await refreshStatus()
     setBusy(false)
@@ -157,10 +154,9 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
   async function copyUrl(url: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(url)
-      setCopied(url)
-      window.setTimeout(() => setCopied(null), 1600)
+      toast.success('Copiado')
     } catch {
-      setError('No se pudo copiar al portapapeles.')
+      toast.error('No se pudo copiar.')
     }
   }
 
@@ -264,7 +260,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
                   <li key={url} className="url-item url-item-lan">
                     <span className="mono">{url}</span>
                     <Button variant="secondary" size="sm" onClick={() => void copyUrl(url)}>
-                      {copied === url ? 'Copiado' : 'Copiar'}
+                      Copiar
                     </Button>
                   </li>
                 ))}
@@ -289,12 +285,6 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
               </ul>
             </div>
           )}
-        </div>
-      )}
-
-      {error && (
-        <div className="state-box error" role="alert">
-          {error}
         </div>
       )}
 

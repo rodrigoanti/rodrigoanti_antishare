@@ -31,6 +31,14 @@ function posixJoin(parent: string, name: string): string {
   return p ? `${p}/${n}` : n
 }
 
+/** True if any path segment is exactly `..` (not a substring like `foo..bar`). */
+function hasDotDotSegment(rel: string): boolean {
+  return String(rel || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .some((seg) => seg === '..')
+}
+
 function isInside(parent: string, child: string): boolean {
   const p = normalize(parent)
   const c = normalize(child)
@@ -254,7 +262,7 @@ export async function importRemotePaths(req: RemoteImportRequest): Promise<Remot
     if (!checked.ok) return { ok: false, imported, error: checked.error }
 
     const destRel = posixJoin(destBase, basename(checked.abs))
-    if (destRel.includes('..')) {
+    if (hasDotDotSegment(destRel) || hasDotDotSegment(destBase)) {
       return { ok: false, imported, error: 'Ruta no permitida (path traversal bloqueado).' }
     }
     try {

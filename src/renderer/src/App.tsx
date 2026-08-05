@@ -3,7 +3,7 @@ import type { ShareStatus } from '../../shared/types'
 import { getApi } from './api'
 import { Home } from './screens/Home'
 import { ShareSettings } from './screens/MyShare'
-import { Button, SidePanel } from './ui'
+import { Button, SidePanel, ToastProvider } from './ui'
 
 export function App(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -41,53 +41,55 @@ export function App(): ReactElement {
   const shareRunning = localStatus?.running ?? false
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <button
-          type="button"
-          className="brand"
-          onClick={() => {
-            sessionStorage.removeItem('antishare.openLocal')
-            setHomeKey((k) => k + 1)
-          }}
-          aria-label="AntiShare — Compartidos"
-        >
-          AntiShare
-        </button>
-        <div className="topbar-right">
-          <span className={`share-pill ${shareRunning ? 'on' : ''}`} aria-live="polite">
-            <span className={`status-dot ${shareRunning ? 'on' : 'off'}`} aria-hidden="true" />
-            {shareRunning ? 'Compartiendo' : 'Sin compartir'}
-          </span>
-          <Button
-            variant="secondary"
-            size="md"
-            aria-haspopup="dialog"
-            aria-expanded={settingsOpen}
-            onClick={() => setSettingsOpen(true)}
+    <ToastProvider>
+      <div className="app-shell">
+        <header className="topbar">
+          <button
+            type="button"
+            className="brand"
+            onClick={() => {
+              sessionStorage.removeItem('antishare.openLocal')
+              setHomeKey((k) => k + 1)
+            }}
+            aria-label="AntiShare — Compartidos"
           >
-            Configurar
-          </Button>
-        </div>
-      </header>
+            AntiShare
+          </button>
+          <div className="topbar-right">
+            <span className={`share-pill ${shareRunning ? 'on' : ''}`} aria-live="polite">
+              <span className={`status-dot ${shareRunning ? 'on' : 'off'}`} aria-hidden="true" />
+              {shareRunning ? 'Compartiendo' : 'Sin compartir'}
+            </span>
+            <Button
+              variant="secondary"
+              size="md"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              onClick={() => setSettingsOpen(true)}
+            >
+              Configurar
+            </Button>
+          </div>
+        </header>
 
-      <main className="main finder-main">
-        <Home
-          key={homeKey}
-          status={localStatus}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-      </main>
+        <main className="main finder-main">
+          <Home
+            key={homeKey}
+            status={localStatus}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        </main>
 
-      <SidePanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        title="Carpeta local"
-        size="sm"
-        side="right"
-      >
-        <ShareSettings onOpenLocal={openLocalFromSettings} onStatusChange={setLocalStatus} />
-      </SidePanel>
-    </div>
+        <SidePanel
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          title="Carpeta local"
+          size="sm"
+          side="right"
+        >
+          <ShareSettings onOpenLocal={openLocalFromSettings} onStatusChange={setLocalStatus} />
+        </SidePanel>
+      </div>
+    </ToastProvider>
   )
 }
