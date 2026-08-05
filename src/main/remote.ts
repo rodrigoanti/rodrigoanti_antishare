@@ -1,4 +1,4 @@
-import { app, net as electronNet } from 'electron'
+import { app } from 'electron'
 import { request as httpRequest } from 'http'
 import type { IncomingMessage } from 'http'
 import { createWriteStream, createReadStream, existsSync, statSync } from 'fs'
@@ -69,11 +69,18 @@ export function classifyPeerNetworkError(
   if (hay.includes('econnrefused')) {
     return `Conexión rechazada en ${where} (ECONNREFUSED). Nadie acepta TCP ${target.port} o el firewall lo corta. ${hint}`
   }
-  if (hay.includes('enetunreach') || hay.includes('ehostunreach')) {
+  if (hay.includes('ehostunreach')) {
+    return (
+      `El host ${where} no responde a nivel de red (EHOSTUNREACH): la LAN no devuelve respuesta ARP ` +
+      `para esa IP. Si el peer se ve por discovery, el Wi‑Fi está aislando clientes entre sí (AP/red ` +
+      `de invitados) o cada equipo está en una red distinta; si no se ve, esa IP ya no está activa. ${hint}`
+    )
+  }
+  if (hay.includes('enetunreach')) {
     if (hostOnLocalSubnet(target.host, getLanIfaces())) {
       return (
-        `La red no alcanza ${where} (ENETUNREACH) aunque están en la misma subred. ` +
-        `Probable VPN/ruta por defecto, firewall inbound TCP ${target.port} o aislamiento AP. ${hint}`
+        `La red no alcanza ${where} (ENETUNREACH) aunque está en tu misma subred. ` +
+        `Probable VPN/ruta por defecto tomando el tráfico o aislamiento AP. ${hint}`
       )
     }
     return `La red no alcanza ${where} (ENETUNREACH). Distinta subred o Wi‑Fi invitado. ${hint}`
@@ -88,7 +95,22 @@ export function classifyPeerNetworkError(
   return `${msg} (${where}). ${hint}`
 }
 
-function parseShareBase(baseUrl: string): { baseUrl: string; host: string; port: number } {
+/** Compact per-host reason used when several peer IPs were tried. */
+export function shortNetworkReason(err: unknown): string {
+  const code = (err as { code?: string } | null)?.code
+  if (typeof code === 'string' && code) return code
+  const hay = errorHaystack(err)
+  if (hay.includes('timeout') || hay.includes('timed out') || hay.includes('abort')) {
+    return 'timeout'
+  }
+  if (!hay) return 'error desconocido'
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.slice(0, 60)
+}
+
+type ShareTarget = { baseUrl: string; host: string; port: number }
+
+function parseShareBase(baseUrl: string): ShareTarget {
   const trimmed = (baseUrl || '').replace(/\/+$/, '')
   try {
     const u = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`)
@@ -124,6 +146,7 @@ function nodeHttpOnce(
         protocol: url.protocol,
         hostname: url.hostname.replace(/^\[|\]$/g, ''),
         port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        family: 4,
         path: `${url.pathname}${url.search}`,
         method: init.method || 'GET',
         headers: {
@@ -131,6 +154,7 @@ function nodeHttpOnce(
           ...(init.headers || {})
         },
         localAddress: init.localAddress,
+        agent: false,
         timeout: init.timeoutMs
       },
       (res: IncomingMessage) => {
@@ -168,42 +192,6 @@ function nodeHttpOnce(
   })
 }
 
-async function electronFetchOnce(
-  urlStr: string,
-  init: {
-    method?: string
-    headers?: Record<string, string>
-    body?: Buffer | string
-    timeoutMs: number
-    stream?: boolean
-  }
-): Promise<PeerHttpResult> {
-  const res = await electronNet.fetch(urlStr, {
-    method: init.method || 'GET',
-    headers: {
-      Connection: 'close',
-      ...(init.headers || {})
-    },
-    body: init.body == null ? undefined : typeof init.body === 'string' ? init.body : new Uint8Array(init.body),
-    signal: AbortSignal.timeout(init.timeoutMs)
-  })
-  if (init.stream && res.body) {
-    return {
-      status: res.status,
-      ok: res.ok,
-      json: async () => res.json(),
-      bodyStream: Readable.fromWeb(res.body as import('stream/web').ReadableStream)
-    }
-  }
-  const buf = Buffer.from(await res.arrayBuffer())
-  return {
-    status: res.status,
-    ok: res.ok,
-    json: async () => (buf.length ? JSON.parse(buf.toString('utf8')) : {}),
-    bodyStream: Readable.from(buf)
-  }
-}
-
 /** Peer HTTP bound to the LAN NIC that shares the peer subnet when possible. */
 export async function peerHttp(
   urlStr: string,
@@ -218,18 +206,7 @@ export async function peerHttp(
   const timeoutMs = init.timeoutMs ?? LIST_TIMEOUT_MS
   const url = new URL(urlStr)
   const localAddress = localAddressForPeer(url.hostname)
-  try {
-    return await nodeHttpOnce(url, { ...init, timeoutMs, localAddress })
-  } catch (e) {
-    if (localAddress) {
-      try {
-        return await electronFetchOnce(urlStr, { ...init, timeoutMs })
-      } catch {
-        throw e
-      }
-    }
-    throw e
-  }
+  return nodeHttpOnce(url, { ...init, timeoutMs, localAddress })
 }
 
 /** Pick a free path in dir: name, name (1).ext, name (2).ext, … (win32 + posix safe). */
@@ -263,12 +240,10 @@ export async function remoteList(req: RemoteListRequest): Promise<RemoteListResu
   }
 
   const path = req.path || ''
-  let lastError: unknown
-  let lastTarget = parseShareBase(bases[0])
+  const failures: Array<{ target: ShareTarget; err: unknown }> = []
 
   for (const candidate of bases) {
     const target = parseShareBase(candidate)
-    lastTarget = target
     try {
       const url = `${target.baseUrl}/api/list?path=${encodeURIComponent(path)}`
       const res = await peerHttp(url, {
@@ -285,24 +260,34 @@ export async function remoteList(req: RemoteListRequest): Promise<RemoteListResu
       const entries = (await res.json()) as DirEntry[]
       return { ok: true, entries }
     } catch (e) {
-      lastError = e
+      failures.push({ target, err: e })
     }
   }
 
+  const primaryFailure = failures[0]
   const peerIps = bases.map((b) => parseShareBase(b).host).filter(Boolean)
   const localIps = getLanIPv4()
   const localIfaces = getLanIfaces()
   const sameSubnet = peerIps.filter((h) => hostOnLocalSubnet(h, localIfaces))
-  const classified = classifyPeerNetworkError(lastError, lastTarget)
+  const classified = classifyPeerNetworkError(
+    primaryFailure?.err,
+    primaryFailure?.target ?? parseShareBase(bases[0])
+  )
   const subnetNote =
     sameSubnet.length === 0 && peerIps.length > 0
       ? ' Ninguna IP del peer está en la misma subred local.'
       : ''
+  // Report every attempt: with several peer IPs the failure reason differs per host,
+  // and collapsing to a single message hides which address actually broke.
+  const attempts = failures
+    .map((f) => `${f.target.host}:${f.target.port} → ${shortNetworkReason(f.err)}`)
+    .join('; ')
   return {
     ok: false,
     error:
-      `${classified} IPs locales: ${localIps.join(', ') || '(ninguna)'}. ` +
-      `IPs del peer: ${peerIps.join(', ') || lastTarget.host}.${subnetNote}`
+      `${classified} Intentos: ${attempts || '(ninguno)'}. ` +
+      `IPs locales: ${localIps.join(', ') || '(ninguna)'}. ` +
+      `IPs del peer: ${peerIps.join(', ') || '(desconocidas)'}.${subnetNote}`
   }
 }
 

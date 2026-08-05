@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "start": "node scripts/patch-electron-mac-plist.mjs && electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "smoke:transport": "tsx scripts/smoke-transport.ts",
+    "smoke:peers": "tsx scripts/smoke-peers.ts",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac dir --mac dmg",
     "dist:win": "npm run build && electron-builder --win nsis --x64",

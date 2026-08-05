@@ -105,8 +105,12 @@ export function localAddressForPeer(host: string): string | undefined {
 }
 
 /**
- * Primary peer IP: (1) same subnet as best local iface (2) UDP fromHost (3) announced.
- * Never loopback / 0.0.0.0. Walk `localIfaces` in caller order (preferred NIC first).
+ * Primary peer IP: (1) UDP source (2) same subnet as best local iface (3) announced.
+ *
+ * The UDP source wins because it is the only address that provably delivered a packet
+ * here: two separate LANs behind different routers can both number 192.168.100.0/24,
+ * so a same-subnet announced IP may belong to a host that never answers ARP.
+ * Never loopback / 0.0.0.0.
  */
 export function pickPeerPrimary(
   candidates: Array<string | undefined | null>,
@@ -115,15 +119,13 @@ export function pickPeerPrimary(
 ): string {
   const from = normalizeHost(fromHost)
   const fromUsable = from && !isUnusableAnnounceHost(from) ? from : ''
-  const pool = uniqueHosts([fromUsable, ...candidates]).filter((h) => !isUnusableAnnounceHost(h))
+  if (fromUsable) return fromUsable
 
+  const pool = uniqueHosts(candidates).filter((h) => !isUnusableAnnounceHost(h))
   for (const iface of localIfaces) {
     const hit = pool.filter((h) => sameSubnetIPv4(h, iface.address, iface.netmask))
-    if (hit.length === 0) continue
-    if (fromUsable && hit.includes(fromUsable)) return fromUsable
-    return hit[0]
+    if (hit.length > 0) return hit[0]
   }
-  if (fromUsable) return fromUsable
   return pool[0] || ''
 }
 

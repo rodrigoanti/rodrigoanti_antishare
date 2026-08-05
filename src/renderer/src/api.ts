@@ -110,10 +110,7 @@ export function mapIpcError(raw: string | undefined, fallback: string): string {
   }
   if (isClearBackendMessage(raw)) return raw
   if (isNetworkReachabilityError(raw)) {
-    return (
-      'El equipo se vio por discovery (UDP) pero no responde HTTP en TCP 8765. ' +
-      'No está apagado: revisá firewall, misma Wi‑Fi (no invitada) y Red local en macOS.'
-    )
+    return 'Visible en la red, sin respuesta en TCP 8765.'
   }
   return raw
 }

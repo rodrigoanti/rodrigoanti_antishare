@@ -3,7 +3,6 @@ import { hostname } from 'os'
 import {
   DISCOVERY_MAGIC,
   DISCOVERY_PORT,
-  PEER_STALE_MS,
   type Peer,
   type PeerAddManualRequest,
   type PeerAddManualResult,
@@ -17,14 +16,17 @@ import {
   isLocalHostAddress,
   isUnusableAnnounceHost,
   normalizeHost,
-  pickPeerPrimary,
-  rankPeerHosts,
   uniqueHosts,
   type LanIface
 } from './net'
+import { PeerTable, buildPeerRecord } from './peerTable'
+import { classifyPeerNetworkError, peerHttp } from './remote'
 
 /** Admin-scoped multicast for LAN AntiShare discovery. */
 export const DISCOVERY_MULTICAST = '239.255.76.67'
+
+/** Push peers to the renderer at most this often while nothing but lastSeen changes. */
+const EMIT_HEARTBEAT_MS = 5000
 
 export type PeersListener = (peers: Peer[]) => void
 
@@ -32,6 +34,11 @@ export interface AnnounceState {
   name: string
   port: number
   tokenRequired: boolean
+  /**
+   * Checked before every packet: announcing a port nobody is listening on turns this
+   * machine into a phantom peer for everyone else on the LAN.
+   */
+  isServing?: () => boolean
 }
 
 interface SenderEntry {
@@ -49,9 +56,9 @@ export class PeerDiscovery {
   private senders: SenderEntry[] = []
   private announceTimer: ReturnType<typeof setInterval> | null = null
   private pruneTimer: ReturnType<typeof setInterval> | null = null
-  private peers = new Map<string, Peer>()
-  private manualKeys = new Set<string>()
+  private table = new PeerTable()
   private listeners = new Set<PeersListener>()
+  private lastEmitAt = 0
   private announce: AnnounceState | null = null
   private localIps = new Set<string>()
   private listening = false
@@ -88,13 +95,22 @@ export class PeerDiscovery {
 
     this.pruneTimer = setInterval(() => {
       void this.refreshNetwork(false)
-      this.prune()
+      if (this.table.prune()) {
+        this.emit()
+        return
+      }
+      // Keep-alive: refresh lastSeen in the renderer without an update per packet.
+      if (this.table.size > 0 && Date.now() - this.lastEmitAt >= EMIT_HEARTBEAT_MS) this.emit()
     }, 2000)
   }
 
   /** Begin/replace share announcements (~2s). Keeps listening. */
   setAnnounce(state: AnnounceState): void {
     this.startListening()
+    if (state.isServing && !state.isServing()) {
+      console.warn('[discovery] announce skipped: share server is not listening')
+      return
+    }
     this.announce = { ...state }
     this.refreshLocalIps()
     this.forgetSelfPeers('', '', state.port)
@@ -136,8 +152,7 @@ export class PeerDiscovery {
       }
     }
     this.senders = []
-    this.peers.clear()
-    this.manualKeys.clear()
+    this.table.clear()
     this.emit()
   }
 
@@ -152,8 +167,14 @@ export class PeerDiscovery {
     this.stopListening()
   }
 
+  /** Peers currently reachable by discovery; expired ones are excluded, not just unsorted. */
   list(): Peer[] {
-    return Array.from(this.peers.values()).sort((a, b) => a.name.localeCompare(b.name))
+    return this.table.list()
+  }
+
+  /** Peer TTL in ms (no announce within this window ⇒ dropped). */
+  get peerTtlMs(): number {
+    return this.table.ttlMs
   }
 
   /** Whether UDP discovery receive is active. */
@@ -188,52 +209,23 @@ export class PeerDiscovery {
     let tokenRequired = Boolean(req.tokenRequired)
     let name = `${host}:${port}`
 
+    // Single probe through the same client as remoteList (IPv4 + localAddress). A HEAD
+    // fallback here used to swallow the transport error and report "fetch failed".
     try {
-      const headers: Record<string, string> = {}
-      if (req.token) headers['X-Share-Token'] = req.token
-      const res = await fetch(`${baseUrl}/api/list?path=`, {
-        headers,
-        signal: AbortSignal.timeout(4000)
+      const res = await peerHttp(`${baseUrl}/api/list?path=`, {
+        headers: req.token ? { 'X-Share-Token': req.token } : {},
+        timeoutMs: 4000
       })
       if (res.status === 401) {
         tokenRequired = true
       } else if (!res.ok) {
-        return { ok: false, error: `Probe failed: HTTP ${res.status}` }
+        return { ok: false, error: `El peer respondió HTTP ${res.status} en ${baseUrl}/api/list.` }
       } else {
         tokenRequired = Boolean(req.tokenRequired)
       }
+      name = host
     } catch (e) {
-      // Fallback: try HEAD /
-      try {
-        const res = await fetch(baseUrl + '/', {
-          method: 'HEAD',
-          signal: AbortSignal.timeout(3000)
-        })
-        if (res.status === 401) tokenRequired = true
-        else if (!res.ok && res.status !== 405) {
-          return {
-            ok: false,
-            error: e instanceof Error ? e.message : `Unreachable ${baseUrl}`
-          }
-        }
-      } catch (e2) {
-        return {
-          ok: false,
-          error: e2 instanceof Error ? e2.message : `Unreachable ${baseUrl}`
-        }
-      }
-    }
-
-    try {
-      const hostnameRes = await fetch(`${baseUrl}/`, {
-        headers: req.token ? { 'X-Share-Token': req.token } : {},
-        signal: AbortSignal.timeout(2000)
-      })
-      if (hostnameRes.ok) {
-        name = host
-      }
-    } catch {
-      /* keep default name */
+      return { ok: false, error: classifyPeerNetworkError(e, { host, port, baseUrl }) }
     }
 
     const peer: Peer = {
@@ -246,18 +238,13 @@ export class PeerDiscovery {
       hosts: [host],
       manual: true
     }
-    const key = peerKey(host, port)
-    this.manualKeys.add(key)
-    this.peers.set(key, peer)
+    this.table.setManual(peer)
     this.emit()
     return { ok: true, peer }
   }
 
   removeManual(req: PeerRemoveManualRequest): { ok: boolean } {
-    const key = peerKey(normalizeHost(req.host), Number(req.port))
-    this.manualKeys.delete(key)
-    const existed = this.peers.delete(key)
-    if (existed) this.emit()
+    if (this.table.removeManual(req.host, Number(req.port))) this.emit()
     return { ok: true }
   }
 
@@ -392,6 +379,7 @@ export class PeerDiscovery {
   }
 
   private emit(): void {
+    this.lastEmitAt = Date.now()
     const list = this.list()
     for (const cb of this.listeners) cb(list)
   }
@@ -412,6 +400,11 @@ export class PeerDiscovery {
 
   private sendAnnouncePackets(): void {
     if (!this.announce || !this.sendersReady) return
+    if (this.announce.isServing && !this.announce.isServing()) {
+      // Share went away (stopped or crashed): stop advertising a dead port.
+      this.clearAnnounce()
+      return
+    }
     this.refreshLocalIps()
 
     const allHosts = getLanIPv4().filter((h) => this.usableAnnounceHost(h))
@@ -456,82 +449,16 @@ export class PeerDiscovery {
 
   private forgetSelfPeers(announcedHost: string, fromHost: string, port: number): void {
     if (!this.announce || port !== this.announce.port) return
-    let changed = false
-    for (const [key, peer] of this.peers) {
-      if (this.manualKeys.has(key)) continue
-      if (peer.port !== port) continue
+    const changed = this.table.forget((peer) => {
+      if (peer.port !== port) return false
       const peerHosts = uniqueHosts([peer.host, ...(peer.hosts ?? [])])
-      if (
+      return (
         peerHosts.some((ph) => isLocalHostAddress(ph, this.localIps)) ||
-        (announcedHost && peerHosts.includes(announcedHost)) ||
-        (fromHost && peerHosts.includes(fromHost))
-      ) {
-        this.peers.delete(key)
-        changed = true
-      }
-    }
+        (Boolean(announcedHost) && peerHosts.includes(announcedHost)) ||
+        (Boolean(fromHost) && peerHosts.includes(fromHost))
+      )
+    })
     if (changed) this.emit()
-  }
-
-  private upsertPeer(peer: Peer, fromHost?: string): void {
-    const host = normalizeHost(peer.host)
-    const port = peer.port
-    const incomingHosts = uniqueHosts([host, ...(peer.hosts ?? [])])
-    if (this.isSelfPacket(host, host, port)) {
-      this.forgetSelfPeers(host, host, port)
-      return
-    }
-
-    let key = peerKey(host, port)
-    let prev = this.peers.get(key)
-    if (!prev) {
-      for (const [k, existing] of this.peers) {
-        if (existing.port !== port) continue
-        const existingHosts = new Set(uniqueHosts([existing.host, ...(existing.hosts ?? [])]))
-        if (incomingHosts.some((h) => existingHosts.has(h))) {
-          key = k
-          prev = existing
-          break
-        }
-      }
-    }
-
-    const localIfaces = getLanIfaces()
-    const mergedHosts = uniqueHosts([
-      prev?.host,
-      ...(prev?.hosts ?? []),
-      host,
-      ...incomingHosts,
-      fromHost
-    ])
-    const ranked = rankPeerHosts(mergedHosts, fromHost ?? host, localIfaces)
-    const primary =
-      ranked[0] || pickPeerPrimary(mergedHosts, fromHost ?? host, localIfaces) || host
-    if (!primary) return
-
-    const newKey = peerKey(primary, port)
-    if (key !== newKey) {
-      this.peers.delete(key)
-      if (this.manualKeys.has(key)) {
-        this.manualKeys.delete(key)
-        this.manualKeys.add(newKey)
-      }
-      key = newKey
-    }
-
-    let next: Peer = {
-      ...peer,
-      host: primary,
-      hosts: ranked.length > 0 ? ranked : mergedHosts,
-      baseUrl: `http://${primary}:${port}`,
-      lastSeen: peer.lastSeen
-    }
-    if (prev?.manual) {
-      next = { ...next, manual: true }
-      this.manualKeys.add(key)
-    }
-    this.peers.set(key, next)
-    this.emit()
   }
 
   private onMessage(msg: Buffer, fromHost: string): void {
@@ -543,7 +470,7 @@ export class PeerDiscovery {
       this.refreshLocalIps()
       const announced = normalizeHost(data.host)
       const from = normalizeHost(fromHost)
-      const announcedList = Array.isArray(data.hosts)
+      const announcedHosts = Array.isArray(data.hosts)
         ? data.hosts.filter((h): h is string => typeof h === 'string')
         : []
       if (this.isSelfPacket(announced, from, data.port)) {
@@ -551,51 +478,26 @@ export class PeerDiscovery {
         return
       }
 
-      const localIfaces = getLanIfaces()
-      const candidates = uniqueHosts([announced, from, ...announcedList])
-      const host = pickPeerPrimary(candidates, from, localIfaces)
-      if (!host) return
-      if (this.isSelfPacket(host, from, data.port)) {
-        this.forgetSelfPeers(host, from, data.port)
-        return
-      }
-
-      const hosts = rankPeerHosts(candidates, from, localIfaces)
-
-      this.upsertPeer(
+      const record = buildPeerRecord(
         {
           name: data.name,
-          host,
           port: data.port,
           tokenRequired: Boolean(data.tokenRequired),
-          lastSeen: Date.now(),
-          baseUrl: `http://${host}:${data.port}`,
-          hosts
+          announcedHost: announced,
+          announcedHosts,
+          fromHost: from,
+          at: Date.now()
         },
-        from
+        getLanIfaces()
       )
+      if (!record) return
+      if (this.isSelfPacket(record.host, from, record.port)) {
+        this.forgetSelfPeers(record.host, from, record.port)
+        return
+      }
+      if (this.table.ingestRecord(record)) this.emit()
     } catch {
       /* ignore malformed */
     }
   }
-
-  private prune(): void {
-    const now = Date.now()
-    let changed = false
-    for (const [key, peer] of this.peers) {
-      if (this.manualKeys.has(key)) {
-        // Manual peers stay until removeManual; refresh lastSeen lightly.
-        continue
-      }
-      if (now - peer.lastSeen > PEER_STALE_MS) {
-        this.peers.delete(key)
-        changed = true
-      }
-    }
-    if (changed) this.emit()
-  }
-}
-
-function peerKey(host: string, port: number): string {
-  return `${host}:${port}`
 }

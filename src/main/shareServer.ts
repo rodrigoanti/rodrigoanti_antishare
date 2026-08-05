@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
+import type { AddressInfo } from 'net'
 import {
   createReadStream,
   createWriteStream,
@@ -26,6 +27,8 @@ export interface ShareServerHandle {
   urls: string[]
   folder: string
   tokenRequired: boolean
+  /** Effective socket the server bound to (family/address/port), for diagnostics. */
+  address: AddressInfo | null
   stop: () => Promise<void>
 }
 
@@ -388,10 +391,18 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
     server.listen(opts.port, '0.0.0.0', () => resolveListen())
   })
 
+  const bound = server.address()
+  const boundInfo = bound && typeof bound === 'object' ? bound : null
+  const effectivePort = boundInfo?.port ?? opts.port
+
   return {
-    port: opts.port,
+    port: effectivePort,
     get urls() {
-      return buildShareUrls(opts.port).all
+      return buildShareUrls(effectivePort).all
+    },
+    get address() {
+      const a = server.address()
+      return a && typeof a === 'object' ? a : null
     },
     folder: root,
     tokenRequired: Boolean(opts.token),

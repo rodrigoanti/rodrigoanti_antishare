@@ -158,8 +158,12 @@ export interface PeerAnnouncement {
 export const DEFAULT_SHARE_PORT = 8765
 export const DISCOVERY_PORT = 8766
 export const DISCOVERY_MAGIC = 'antishare-v1'
-/** Drop UDP-discovered peers if no announce arrives within this window (announce ~2s). */
-export const PEER_STALE_MS = 25_000
+/**
+ * Drop UDP-discovered peers if no announce arrives within this window. Announces go out
+ * every ~2s, so this tolerates 4 lost rounds while still hiding a peer that left within
+ * ~10s instead of keeping a phantom entry the UI cannot connect to.
+ */
+export const PEER_STALE_MS = 10_000
 
 /** OS drag-out (Electron startDrag). Files only. */
 export interface StartDragLocalRequest {

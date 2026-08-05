@@ -1,0 +1,189 @@
+/**
+ * In-memory table of peers seen over UDP discovery.
+ *
+ * Peers are never persisted: a peer exists only while it keeps announcing. Records are
+ * rebuilt from each announcement instead of merged with the previous one, so an address
+ * the peer no longer advertises cannot come back to life.
+ */
+import { PEER_STALE_MS, type Peer } from '../shared/types'
+import { normalizeHost, pickPeerPrimary, rankPeerHosts, uniqueHosts, type LanIface } from './net'
+
+/** One announcement as received: payload fields plus the UDP source address. */
+export interface PeerObservation {
+  name: string
+  port: number
+  tokenRequired: boolean
+  /** `host` from the payload. */
+  announcedHost?: string
+  /** `hosts[]` from the payload (every LAN IPv4 the announcer currently has). */
+  announcedHosts?: string[]
+  /** UDP source address (the only address with proven delivery). */
+  fromHost?: string
+  at?: number
+}
+
+export function peerKey(host: string, port: number): string {
+  return `${host}:${port}`
+}
+
+export function isPeerExpired(peer: Peer, now: number, ttlMs: number): boolean {
+  if (peer.manual) return false
+  return now - peer.lastSeen > ttlMs
+}
+
+/**
+ * Build a peer record from a single observation. An announcement carries every address
+ * the announcer has, so it is authoritative on its own: nothing is carried over from a
+ * previous record. Returns null when no usable (non-loopback) address is available.
+ */
+export function buildPeerRecord(
+  obs: PeerObservation,
+  localIfaces: Array<Pick<LanIface, 'address' | 'netmask'>>
+): Peer | null {
+  const name = String(obs.name || '').trim()
+  const port = Number(obs.port)
+  if (!name || !Number.isInteger(port) || port < 1 || port > 65535) return null
+
+  const from = normalizeHost(obs.fromHost)
+  const candidates = uniqueHosts([obs.announcedHost, from, ...(obs.announcedHosts ?? [])])
+  const host = pickPeerPrimary(candidates, from, localIfaces)
+  if (!host) return null
+
+  const hosts = rankPeerHosts(candidates, from, localIfaces)
+  return {
+    name,
+    host,
+    port,
+    tokenRequired: Boolean(obs.tokenRequired),
+    lastSeen: obs.at ?? Date.now(),
+    baseUrl: `http://${host}:${port}`,
+    hosts: hosts.length > 0 ? hosts : [host]
+  }
+}
+
+/** Fields the UI renders; lastSeen alone must not trigger a peers:onUpdate. */
+function contentChanged(a: Peer, b: Peer): boolean {
+  return (
+    a.name !== b.name ||
+    a.host !== b.host ||
+    a.port !== b.port ||
+    a.baseUrl !== b.baseUrl ||
+    a.tokenRequired !== b.tokenRequired ||
+    Boolean(a.manual) !== Boolean(b.manual) ||
+    (a.hosts ?? []).join(',') !== (b.hosts ?? []).join(',')
+  )
+}
+
+export class PeerTable {
+  private peers = new Map<string, Peer>()
+  private manualKeys = new Set<string>()
+  readonly ttlMs: number
+
+  constructor(opts: { ttlMs?: number } = {}) {
+    this.ttlMs = opts.ttlMs ?? PEER_STALE_MS
+  }
+
+  /**
+   * Record an announcement. Returns true when the visible peer list changed, so callers
+   * do not push an update on every keep-alive packet.
+   */
+  ingest(
+    obs: PeerObservation,
+    localIfaces: Array<Pick<LanIface, 'address' | 'netmask'>>
+  ): boolean {
+    const record = buildPeerRecord(obs, localIfaces)
+    if (!record) return false
+    return this.ingestRecord(record)
+  }
+
+  /** Store an already-built record (callers that must inspect it first, e.g. self-filter). */
+  ingestRecord(record: Peer): boolean {
+    const key = peerKey(record.host, record.port)
+    const matchKey = this.findExistingKey(record, key)
+    const prev = matchKey ? this.peers.get(matchKey) : undefined
+
+    if (matchKey && matchKey !== key) {
+      // Same peer on a new address: drop the old entry so the dead IP disappears at once.
+      this.peers.delete(matchKey)
+      if (this.manualKeys.delete(matchKey)) this.manualKeys.add(key)
+    }
+
+    const next: Peer = prev?.manual || this.manualKeys.has(key)
+      ? { ...record, manual: true }
+      : record
+    this.peers.set(key, next)
+    return !prev || contentChanged(prev, next)
+  }
+
+  /**
+   * Existing entry for this record: exact address, then any shared address, then the same
+   * name on the same port (the announcer kept its identity but changed IP).
+   */
+  private findExistingKey(record: Peer, key: string): string | undefined {
+    if (this.peers.has(key)) return key
+    const addresses = new Set(uniqueHosts([record.host, ...(record.hosts ?? [])]))
+    for (const [k, peer] of this.peers) {
+      if (peer.port !== record.port) continue
+      const known = uniqueHosts([peer.host, ...(peer.hosts ?? [])])
+      if (known.some((h) => addresses.has(h))) return k
+    }
+    for (const [k, peer] of this.peers) {
+      if (peer.port === record.port && peer.name === record.name) return k
+    }
+    return undefined
+  }
+
+  /** Manual peers are user-pinned and never expire. */
+  setManual(peer: Peer): void {
+    const key = peerKey(peer.host, peer.port)
+    this.manualKeys.add(key)
+    this.peers.set(key, { ...peer, manual: true })
+  }
+
+  removeManual(host: string, port: number): boolean {
+    const key = peerKey(normalizeHost(host), Number(port))
+    this.manualKeys.delete(key)
+    return this.peers.delete(key)
+  }
+
+  /** Reachable peers only: expired discovered peers are never returned. */
+  list(now: number = Date.now()): Peer[] {
+    return Array.from(this.peers.values())
+      .filter((peer) => !isPeerExpired(peer, now, this.ttlMs))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  /** Delete expired discovered peers. Returns true when something was removed. */
+  prune(now: number = Date.now()): boolean {
+    let changed = false
+    for (const [key, peer] of this.peers) {
+      if (isPeerExpired(peer, now, this.ttlMs)) {
+        this.peers.delete(key)
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  /** Drop discovered peers matching `predicate` (manual entries are kept). */
+  forget(predicate: (peer: Peer, key: string) => boolean): boolean {
+    let changed = false
+    for (const [key, peer] of this.peers) {
+      if (peer.manual || this.manualKeys.has(key)) continue
+      if (predicate(peer, key)) {
+        this.peers.delete(key)
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  clear(): void {
+    this.peers.clear()
+    this.manualKeys.clear()
+  }
+
+  get size(): number {
+    return this.peers.size
+  }
+}

@@ -546,6 +546,8 @@ export function Explorer({ target, onBack }: ExplorerProps): ReactElement {
           hosts={target.hosts}
           localHosts={target.localHosts}
           detail={errorRaw}
+          peerName={target.label}
+          onRetry={() => load({ silent: false })}
         />
       ) : error ? (
         <div className="state-box error" role="alert">

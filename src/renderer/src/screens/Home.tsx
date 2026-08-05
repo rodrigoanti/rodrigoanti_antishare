@@ -734,6 +734,8 @@ export function Home({ status, onOpenSettings }: HomeProps): ReactElement {
           hosts={nav.peer.hosts}
           localHosts={localLanHosts}
           detail={errorRaw}
+          peerName={nav.peer.name}
+          onRetry={() => loadContents({ silent: false })}
         />
       ) : error ? (
         <div className="state-box error" role="alert">

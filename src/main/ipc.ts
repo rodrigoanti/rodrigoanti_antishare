@@ -28,10 +28,10 @@ import { remoteDownload, remoteList, remoteUpload } from './remote'
 import { loadSettings, saveSettings } from './settings'
 import { runNetworkDiagnose } from './diagnose'
 import { handlePrepareDrag, handleStartDrag, handleStartDragLocal, ensureDragIconFile } from './drag'
-import { buildShareUrls, getLanIfaces, rankPeerHosts } from './net'
+import { buildShareUrls, uniqueHosts } from './net'
 
-function liveShareUrls(): string[] {
-  return buildShareUrls(DEFAULT_SHARE_PORT).all
+function liveShareUrls(port: number = DEFAULT_SHARE_PORT): string[] {
+  return buildShareUrls(port).all
 }
 
 let share: ShareServerHandle | null = null
@@ -63,17 +63,20 @@ async function startShareInternal(req: ShareStartRequest): Promise<ShareStartRes
     }
     // Fixed share port — ignore req.port
     const port = DEFAULT_SHARE_PORT
-    share = await startShareServer({
+    const handle = await startShareServer({
       folder: req.folder,
       port,
       token: req.token
     })
+    share = handle
+    // Announce only while this exact server is the live one and still bound.
     discovery.setAnnounce({
       name: hostname(),
-      port: DEFAULT_SHARE_PORT,
-      tokenRequired: share.tokenRequired
+      port: handle.port,
+      tokenRequired: handle.tokenRequired,
+      isServing: () => share === handle && handle.address !== null
     })
-    return { ok: true, urls: liveShareUrls(), port: DEFAULT_SHARE_PORT }
+    return { ok: true, urls: liveShareUrls(handle.port), port: handle.port }
   } catch (e) {
     return {
       ok: false,
@@ -180,7 +183,8 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('share:status', async (): Promise<ShareStatus> => {
-    if (!share) {
+    // A handle whose socket is no longer bound is not running, whatever we last stored.
+    if (!share || share.address === null) {
       return {
         running: false,
         folder: null,
@@ -192,8 +196,8 @@ export function registerIpc(): void {
     return {
       running: true,
       folder: share.folder,
-      port: DEFAULT_SHARE_PORT,
-      urls: liveShareUrls(),
+      port: share.port,
+      urls: liveShareUrls(share.port),
       tokenRequired: share.tokenRequired
     }
   })
@@ -225,7 +229,9 @@ export function registerIpc(): void {
     })
     if (!known) return remoteList(req)
 
-    const ranked = rankPeerHosts([known.host, ...(known.hosts ?? [])], known.host, getLanIfaces())
+    // discovery already ranked hosts with the verified UDP source first; re-ranking here
+    // (without that source) could promote a look-alike same-subnet IP that never replies.
+    const ranked = uniqueHosts([known.host, ...(known.hosts ?? [])])
     const urls = ranked.map((h) => `http://${h}:${known.port}`)
     const primaryUrl = urls[0] || base
     const altBaseUrls = [...urls.slice(1), ...(req.altBaseUrls ?? [])].filter(

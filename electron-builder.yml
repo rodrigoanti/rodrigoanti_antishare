@@ -9,6 +9,7 @@ files:
   - package.json
   - resources/drag-icon.png
 asar: true
+afterPack: scripts/adhoc-sign-mac.cjs
 mac:
   icon: build/icon.png
   category: public.app-category.utilities

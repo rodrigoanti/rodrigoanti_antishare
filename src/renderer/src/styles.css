@@ -490,46 +490,215 @@
   border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
 }
 
-.peer-reach-alert {
+.conn-error {
   margin-top: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
+  background: var(--color-danger-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
 }
 
-.peer-reach-alert p {
-  margin: 0;
+.conn-error-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
-.peer-reach-target {
-  margin: var(--space-2) 0 0;
-}
-
-.peer-host-label {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-xs);
-  font-weight: 600;
-}
-
-.peer-host-list {
-  list-style: none;
-  margin: var(--space-1) 0 0;
-  padding: 0;
+.conn-error-headline {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
-.peer-host-note {
+.conn-error-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.conn-error-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.conn-error-meta,
+.conn-error-note,
+.conn-error-summary {
+  margin: 0;
   font-size: var(--text-xs);
-  opacity: 0.9;
+  color: var(--color-text-muted);
 }
 
-.error-hints {
-  margin: var(--space-2) 0 0;
-  padding-left: 1.2em;
+.conn-error-sep {
+  margin: 0 6px;
+}
+
+.conn-error-note {
+  color: var(--color-text);
+}
+
+.conn-error-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.conn-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
   gap: var(--space-1);
 }
 
-.error-hints li {
+.conn-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
+}
+
+.conn-step-mark {
+  width: 1.1rem;
+  height: 1.1rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+}
+
+.conn-step-ok .conn-step-mark {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.conn-step-error .conn-step-mark,
+.conn-step-warn .conn-step-mark {
+  background: var(--color-danger-soft);
+  color: var(--color-warning);
+}
+
+.conn-step-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.conn-step-msg {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.conn-step-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.conn-fold {
+  border-top: 1px solid color-mix(in srgb, var(--color-warning) 18%, transparent);
+  padding-top: var(--space-2);
+}
+
+.conn-fold > summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  list-style: revert;
+}
+
+.conn-fold > summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.conn-fold-body {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.conn-fold-label {
   margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.conn-ip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: var(--text-xs);
+}
+
+.conn-tag {
+  margin-left: var(--space-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.conn-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--space-3);
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.conn-facts dt {
+  color: var(--color-text-muted);
+}
+
+.conn-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.conn-facts-raw {
+  white-space: pre-wrap;
+}
+
+.conn-tips {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.conn-error-foot {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .state-box.empty p {
