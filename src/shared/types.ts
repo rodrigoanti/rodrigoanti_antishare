@@ -263,6 +263,8 @@ export interface StartDragResult {
 }
 
 export interface AntishareApi {
+  /** Host platform ('darwin' | 'win32' | 'linux' | 'unknown'), for window-chrome styling only. */
+  platform: string
   selectFolder: () => Promise<string | null>
   startShare: (req: ShareStartRequest) => Promise<ShareStartResult>
   stopShare: () => Promise<ShareStopResult>

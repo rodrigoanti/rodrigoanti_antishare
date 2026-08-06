@@ -98,9 +98,28 @@ export class PeerTable {
 
   /** Store an already-built record (callers that must inspect it first, e.g. self-filter). */
   ingestRecord(record: Peer): boolean {
-    const key = peerKey(record.host, record.port)
-    const matchKey = this.findExistingKey(record, key)
+    // Resolve existing peer before keying on primary — multi-NIC peers send one
+    // UDP packet per interface, and pickPeerPrimary follows fromHost each time.
+    const provisionalKey = peerKey(record.host, record.port)
+    const matchKey = this.findExistingKey(record, provisionalKey)
     const prev = matchKey ? this.peers.get(matchKey) : undefined
+
+    let sticky = record
+    if (prev && record.host !== prev.host) {
+      const candidates = uniqueHosts([record.host, ...(record.hosts ?? [])])
+      if (candidates.includes(prev.host)) {
+        // Same peer, different NIC packet: keep the sticky primary.
+        sticky = {
+          ...record,
+          host: prev.host,
+          baseUrl: `http://${prev.host}:${record.port}`,
+          hosts: uniqueHosts([prev.host, ...candidates])
+        }
+      }
+      // else: prev.host left the candidate set — allow the primary to move.
+    }
+
+    const key = peerKey(sticky.host, sticky.port)
 
     if (matchKey && matchKey !== key) {
       // Same peer on a new address: drop the old entry so the dead IP disappears at once.
@@ -109,8 +128,8 @@ export class PeerTable {
     }
 
     const next: Peer = prev?.manual || this.manualKeys.has(key)
-      ? { ...record, manual: true }
-      : record
+      ? { ...sticky, manual: true }
+      : sticky
     this.peers.set(key, next)
     return !prev || contentChanged(prev, next)
   }

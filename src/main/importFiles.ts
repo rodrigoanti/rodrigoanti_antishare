@@ -12,7 +12,7 @@ import {
   realpathSync,
   statSync
 } from 'fs'
-import { basename, extname, isAbsolute, join, normalize, relative, sep } from 'path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'path'
 import type {
   ImportLocalRequest,
   ImportLocalResult,
@@ -62,6 +62,21 @@ function copyTree(src: string, dest: string): void {
   const st = lstatSync(src)
   if (st.isSymbolicLink()) return
   if (st.isDirectory()) {
+    let srcReal = src
+    try {
+      srcReal = realpathSync(src)
+    } catch {
+      srcReal = normalize(src)
+    }
+    let destNorm = normalize(dest)
+    try {
+      if (existsSync(dest)) destNorm = realpathSync(dest)
+    } catch {
+      destNorm = normalize(dest)
+    }
+    if (isInside(srcReal, destNorm)) {
+      throw new Error('No se puede copiar una carpeta dentro de sí misma.')
+    }
     mkdirSync(dest, { recursive: true })
     for (const name of readdirSync(src)) {
       copyTree(join(src, name), join(dest, name))
@@ -84,17 +99,32 @@ function validateSource(source: string): { ok: true; abs: string } | { ok: false
   return { ok: true, abs: source }
 }
 
-function rejectSelfCopy(shareReal: string, srcAbs: string, destAbs: string): string | null {
+function rejectSelfCopy(
+  shareReal: string,
+  srcAbs: string,
+  destDir: string,
+  destAbs: string
+): string | null {
   let srcReal = srcAbs
+  let destDirReal = destDir
   try {
     if (!lstatSync(srcAbs).isSymbolicLink()) srcReal = realpathSync(srcAbs)
   } catch {
     return 'No se pudo leer el origen.'
   }
+  try {
+    destDirReal = realpathSync(destDir)
+  } catch {
+    return 'No se pudo leer el destino.'
+  }
+  const destLogical = join(destDirReal, basename(destAbs))
   const st = lstatSync(srcAbs)
   if (!st.isDirectory()) return null
-  if (isInside(srcReal, destAbs)) {
+  if (isInside(srcReal, destLogical)) {
     return 'No se puede copiar una carpeta dentro de sí misma.'
+  }
+  if (dirname(srcReal) === destDirReal) {
+    return 'Esa carpeta ya está en este destino.'
   }
   if (isInside(srcReal, shareReal)) {
     return 'No se puede importar el share (ni una carpeta que lo contiene) dentro de sí mismo.'
@@ -144,7 +174,7 @@ export function importLocalPaths(
       return { ok: false, imported, error: 'Ruta no permitida (path traversal bloqueado).' }
     }
 
-    const blocked = rejectSelfCopy(shareReal, checked.abs, destAbs)
+    const blocked = rejectSelfCopy(shareReal, checked.abs, destDir, destAbs)
     if (blocked) return { ok: false, imported, error: blocked }
 
     try {

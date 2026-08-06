@@ -15,12 +15,17 @@ function resolveAppIcon(): string | undefined {
 
 function createWindow(): void {
   const icon = resolveAppIcon()
+  const isMac = process.platform === 'darwin'
   const win = new BrowserWindow({
     width: 960,
     height: 680,
     show: false,
     title: 'AntiShare',
     ...(icon ? { icon } : {}),
+    // Inset traffic lights so the app toolbar is the only header band.
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

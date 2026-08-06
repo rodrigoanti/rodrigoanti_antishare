@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from 'react'
-import { FileIcon, FolderIcon } from './FolderIcon'
+import { EntryGlyph } from './FolderIcon'
 import { cx } from './utils/cx'
 import styles from './FolderItem.module.css'
 
@@ -44,6 +44,7 @@ export function FolderItem({
 }: FolderItemProps): ReactElement {
   const canDrag = onDragStart != null && draggable !== false && !renaming
   const renameRef = useRef<HTMLInputElement>(null)
+  const iconSize = viewMode === 'list' ? 'sm' : 'lg'
 
   useEffect(() => {
     if (!renaming) return
@@ -78,12 +79,14 @@ export function FolderItem({
     />
   )
 
+  const glyph = <EntryGlyph name={name} kind={kind} size={iconSize} />
+
   if (viewMode === 'list') {
     if (renaming) {
       return (
         <div className={cx(styles.row, styles.selected)} role="group">
           <span className={styles.rowIcon} aria-hidden="true">
-            {kind === 'folder' ? <FolderIcon width={28} height={23} /> : <FileIcon width={22} height={28} />}
+            {glyph}
           </span>
           {renameField}
           <span className={styles.rowStatus}>{status ?? '—'}</span>
@@ -107,7 +110,7 @@ export function FolderItem({
         {...rest}
       >
         <span className={styles.rowIcon} aria-hidden="true">
-          {kind === 'folder' ? <FolderIcon width={28} height={23} /> : <FileIcon width={22} height={28} />}
+          {glyph}
         </span>
         <span className={styles.rowName}>{name}</span>
         <span className={styles.rowStatus}>{status ?? '—'}</span>
@@ -121,7 +124,7 @@ export function FolderItem({
     return (
       <div className={cx(styles.iconItem, styles.selected)} role="group">
         <span className={styles.iconArt} aria-hidden="true">
-          {kind === 'folder' ? <FolderIcon /> : <FileIcon />}
+          {glyph}
         </span>
         {renameField}
       </div>
@@ -143,11 +146,10 @@ export function FolderItem({
       {...rest}
     >
       <span className={styles.iconArt} aria-hidden="true">
-        {kind === 'folder' ? <FolderIcon /> : <FileIcon />}
+        {glyph}
         {badge ? <span className={styles.iconBadge}>{badge}</span> : null}
       </span>
       <span className={styles.iconLabel}>{name}</span>
-      {status ? <span className={styles.iconStatus}>{status}</span> : null}
     </button>
   )
 }

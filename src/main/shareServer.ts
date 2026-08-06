@@ -3,14 +3,20 @@ import type { AddressInfo } from 'net'
 import {
   createReadStream,
   createWriteStream,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   realpathSync,
   readdirSync,
-  statSync
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync
 } from 'fs'
 import { join, resolve, sep } from 'path'
+import { tmpdir } from 'os'
 import { pipeline } from 'stream/promises'
 import Busboy from 'busboy'
 import type { DirEntry } from '../shared/types'
@@ -158,6 +164,15 @@ function strField(body: Record<string, unknown>, key: string): string {
   return typeof v === 'string' ? v : ''
 }
 
+function commitStagedFile(stagePath: string, finalPath: string): void {
+  try {
+    renameSync(stagePath, finalPath)
+  } catch {
+    copyFileSync(stagePath, finalPath)
+    unlinkSync(stagePath)
+  }
+}
+
 async function handleUpload(
   req: IncomingMessage,
   res: ServerResponse,
@@ -177,49 +192,109 @@ async function handleUpload(
   // Re-validate after mkdir so a raced symlink cannot escape.
   resolveSafe(root, destRel)
 
-  await new Promise<void>((resolvePromise, reject) => {
-    const bb = Busboy({ headers: req.headers })
-    const writes: Promise<void>[] = []
-    let errored = false
+  const stagingRoot = mkdtempSync(join(tmpdir(), 'antishare-up-'))
+  type Staged = { stagePath: string; finalPath: string }
+  const staged: Staged[] = []
 
-    bb.on('file', (_name, file, info) => {
-      const filename = info.filename || 'upload.bin'
-      const safeName = filename.replace(/[/\\]/g, '_')
-      let outPath: string
-      try {
-        const fileRel = destRel && destRel !== '.' ? join(destRel, safeName) : safeName
-        outPath = resolveSafe(root, fileRel)
-      } catch {
-        file.resume()
-        errored = true
-        sendJson(res, 403, { error: 'Path traversal blocked' })
-        return
+  try {
+    await new Promise<void>((resolvePromise, reject) => {
+      const bb = Busboy({ headers: req.headers })
+      const writes: Promise<void>[] = []
+      let finished = false
+      let batchError: { status: number; error: string } | null = null
+
+      const abortBatch = (status: number, error: string): void => {
+        if (batchError) return
+        batchError = { status, error }
       }
-      const ws = createWriteStream(outPath)
-      writes.push(
-        new Promise<void>((resWrite, rejWrite) => {
-          file.pipe(ws)
-          ws.on('finish', () => resWrite())
-          ws.on('error', rejWrite)
-          file.on('error', rejWrite)
-        })
-      )
-    })
 
-    bb.on('error', reject)
-    bb.on('finish', () => {
-      void Promise.all(writes)
-        .then(() => {
-          if (!errored) {
-            sendJson(res, 200, { ok: true, saved: writes.length })
-            resolvePromise()
-          }
-        })
-        .catch(reject)
-    })
+      const settleOk = (): void => {
+        if (finished) return
+        finished = true
+        resolvePromise()
+      }
 
-    req.pipe(bb)
-  })
+      const settleErr = (err: unknown): void => {
+        if (finished) return
+        finished = true
+        reject(err)
+      }
+
+      bb.on('file', (_name, file, info) => {
+        if (batchError) {
+          file.resume()
+          return
+        }
+        const filename = info.filename || 'upload.bin'
+        const safeName = filename.replace(/[/\\]/g, '_')
+        let finalPath: string
+        try {
+          const fileRel = destRel && destRel !== '.' ? join(destRel, safeName) : safeName
+          finalPath = resolveSafe(root, fileRel)
+        } catch {
+          file.resume()
+          abortBatch(403, 'Path traversal blocked')
+          return
+        }
+
+        const stagePath = join(stagingRoot, `${staged.length}-${safeName}`)
+        staged.push({ stagePath, finalPath })
+        const ws = createWriteStream(stagePath)
+        writes.push(
+          new Promise<void>((resWrite, rejWrite) => {
+            file.pipe(ws)
+            ws.on('finish', () => resWrite())
+            ws.on('error', rejWrite)
+            file.on('error', rejWrite)
+          })
+        )
+      })
+
+      bb.on('error', (err) => settleErr(err))
+
+      bb.on('finish', () => {
+        void Promise.all(writes)
+          .then(() => {
+            if (batchError) {
+              if (!res.headersSent) {
+                sendJson(res, batchError.status, { error: batchError.error })
+              }
+              settleOk()
+              return
+            }
+            const committed: string[] = []
+            try {
+              for (const item of staged) {
+                commitStagedFile(item.stagePath, item.finalPath)
+                committed.push(item.finalPath)
+              }
+            } catch (commitErr) {
+              for (const path of committed) {
+                try {
+                  unlinkSync(path)
+                } catch {
+                  /* ignore rollback errors */
+                }
+              }
+              throw commitErr
+            }
+            if (!res.headersSent) {
+              sendJson(res, 200, { ok: true, saved: staged.length })
+            }
+            settleOk()
+          })
+          .catch((err) => settleErr(err))
+      })
+
+      req.pipe(bb)
+    })
+  } finally {
+    try {
+      rmSync(stagingRoot, { recursive: true, force: true })
+    } catch {
+      /* ignore staging cleanup errors */
+    }
+  }
 }
 
 export async function startShareServer(opts: ShareServerOptions): Promise<ShareServerHandle> {

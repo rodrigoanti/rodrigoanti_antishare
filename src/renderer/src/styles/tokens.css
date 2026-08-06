@@ -1,0 +1,137 @@
+/**
+ * AntiShare design tokens — macOS-native system language.
+ * Import once from global.css. Prefer these variables over hardcoded colors.
+ */
+
+:root {
+  /* Neutrals */
+  --as-gray-50: #f5f5f7;
+  --as-gray-100: #e5e5ea;
+  --as-gray-200: #d1d1d6;
+  --as-gray-300: #c7c7cc;
+  --as-gray-400: #8e8e93;
+  --as-gray-500: #6e6e73;
+  --as-gray-900: #1d1d1f;
+
+  /* System accent */
+  --as-blue: #007aff;
+  --as-blue-hover: #0071e3;
+  --as-blue-soft: rgba(0, 122, 255, 0.12);
+  --as-blue-selected: #d6e8ff;
+  --as-blue-selected-label: #007aff;
+
+  /* Semantic */
+  --as-green: #34c759;
+  --as-green-soft: rgba(52, 199, 89, 0.14);
+  --as-orange: #ff9f0a;
+  --as-red: #ff3b30;
+
+  /* Drop target (distinct from selection blue) */
+  --as-drop: #30d158;
+  --as-drop-soft: rgba(48, 209, 88, 0.12);
+  --as-drop-border: rgba(48, 209, 88, 0.55);
+
+  /* Spacing — 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+  --space-9: 64px;
+
+  /* Type */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --text-title: 17px;
+  --text-body: 13px;
+  --text-callout: 15px;
+  --text-caption: 12px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 17px;
+  --text-2xl: 22px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 980px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --duration-fast: 150ms;
+  --transition-fast: 150ms var(--ease-out);
+  --transition-base: 220ms var(--ease-out);
+  --transition-spring: 280ms cubic-bezier(0.34, 1.2, 0.64, 1);
+
+  /* Map to existing semantic names */
+  --color-primary: var(--as-blue);
+  --color-primary-hover: var(--as-blue-hover);
+  --color-primary-active: #0056b3;
+  --color-primary-soft: var(--as-blue-soft);
+  --color-primary-contrast: #ffffff;
+  --color-bg: #ffffff;
+  --color-bg-subtle: var(--as-gray-50);
+  --color-surface: #ffffff;
+  --color-surface-2: var(--as-gray-50);
+  --color-surface-3: var(--as-gray-100);
+  --color-border: var(--as-gray-200);
+  --color-border-subtle: var(--as-gray-100);
+  --color-text: var(--as-gray-900);
+  --color-text-muted: var(--as-gray-500);
+  --color-text-subtle: var(--as-gray-400);
+  --color-success: var(--as-green);
+  --color-success-soft: var(--as-green-soft);
+  --color-danger: var(--as-red);
+  --color-danger-soft: rgba(255, 59, 48, 0.1);
+  --color-warning: var(--as-orange);
+  --color-overlay: rgba(0, 0, 0, 0.36);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.08);
+  --shadow-glow-primary: 0 4px 14px rgba(0, 122, 255, 0.22);
+}
+
+[data-theme='dark'] {
+  --as-gray-50: #1c1c1e;
+  --as-gray-100: #2c2c2e;
+  --as-gray-200: #3a3a3c;
+  --as-gray-300: #48484a;
+  --as-gray-400: #8e8e93;
+  --as-gray-500: #aeaeb2;
+  --as-gray-900: #f5f5f7;
+
+  --as-blue: #0a84ff;
+  --as-blue-hover: #409cff;
+  --as-blue-soft: rgba(10, 132, 255, 0.18);
+  --as-blue-selected: rgba(10, 132, 255, 0.28);
+
+  --as-green: #30d158;
+  --as-green-soft: rgba(48, 209, 88, 0.16);
+  --as-drop: #30d158;
+  --as-drop-soft: rgba(48, 209, 88, 0.16);
+  --as-drop-border: rgba(48, 209, 88, 0.5);
+
+  --color-bg: #000000;
+  --color-bg-subtle: #1c1c1e;
+  --color-surface: #1c1c1e;
+  --color-surface-2: #2c2c2e;
+  --color-surface-3: #3a3a3c;
+  --color-border: #3a3a3c;
+  --color-border-subtle: #2c2c2e;
+  --color-text: #f5f5f7;
+  --color-text-muted: #aeaeb2;
+  --color-text-subtle: #8e8e93;
+  --color-overlay: rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+}

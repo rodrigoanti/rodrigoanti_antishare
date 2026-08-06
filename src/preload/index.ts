@@ -23,6 +23,7 @@ import type {
 } from '../shared/types'
 
 const api: AntishareApi = {
+  platform: process.platform,
   selectFolder: () => ipcRenderer.invoke('share:selectFolder'),
   startShare: (req: ShareStartRequest) => ipcRenderer.invoke('share:start', req),
   stopShare: () => ipcRenderer.invoke('share:stop'),

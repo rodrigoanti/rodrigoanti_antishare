@@ -86,6 +86,36 @@ async function main(): Promise<void> {
     const self = importLocalPaths(shareRoot, { sources: [shareRoot] })
     assert(!self.ok, `importar el share en sí mismo debía fallar: ${self.error}`)
 
+    const alreadyThere = importLocalPaths(shareRoot, {
+      sources: [join(shareRoot, 'nested')],
+      destPath: ''
+    })
+    assert(!alreadyThere.ok, `re-drop nested en raíz debía fallar: ${alreadyThere.error}`)
+    assert(
+      /ya está en este destino/i.test(alreadyThere.error ?? ''),
+      `mensaje same-parent: ${alreadyThere.error}`
+    )
+
+    const nestSelf = importLocalPaths(shareRoot, {
+      sources: [join(shareRoot, 'nested')],
+      destPath: 'nested'
+    })
+    assert(!nestSelf.ok, `nest-into-self debía fallar: ${nestSelf.error}`)
+    assert(
+      /dentro de sí misma/i.test(nestSelf.error ?? ''),
+      `mensaje nest-into-self: ${nestSelf.error}`
+    )
+
+    const outsideOk = importLocalPaths(shareRoot, {
+      sources: [join(outside, 'hello.txt')],
+      destPath: 'nested'
+    })
+    assert(outsideOk.ok && outsideOk.imported === 1, `copy externo a nested: ${outsideOk.error}`)
+    assert(
+      readFileSync(join(shareRoot, 'nested', 'hello.txt'), 'utf8').includes('import-hello'),
+      'copy externo no llegó a nested'
+    )
+
     const handle = await startShareServer({ folder: shareRoot, port: PORT })
     const baseUrl = `http://127.0.0.1:${PORT}`
     try {

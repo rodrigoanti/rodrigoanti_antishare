@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import type { ShareStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
+import { useShareStatus } from '../shareStatus'
 import { Alert, Button, Input, LockBadge, toast } from '../ui'
 import { NetworkStatus } from './NetworkStatus'
 
@@ -25,37 +25,19 @@ function splitShareUrls(urls: string[]): { lan: string[]; local: string[] } {
 
 interface ShareSettingsProps {
   onOpenLocal?: () => void
-  onStatusChange?: (status: ShareStatus) => void
 }
 
-export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProps): ReactElement {
+export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement {
   const api = getApi()
+  const { status, refreshStatus, setStatus } = useShareStatus()
   const [folder, setFolder] = useState('')
   const [token, setToken] = useState('')
   const [autoStart, setAutoStart] = useState(false)
-  const [status, setStatus] = useState<ShareStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [restoredNote, setRestoredNote] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const saveTimer = useRef<number | null>(null)
   const skipNextSave = useRef(true)
-
-  const applyStatus = useCallback(
-    (next: ShareStatus) => {
-      setStatus(next)
-      onStatusChange?.(next)
-    },
-    [onStatusChange]
-  )
-
-  const refreshStatus = useCallback(async () => {
-    try {
-      const next = await api.shareStatus()
-      applyStatus(next)
-    } catch (e) {
-      toast.error(mapIpcError(e instanceof Error ? e.message : String(e), 'No se pudo leer el estado.'))
-    }
-  }, [api, applyStatus])
 
   const loadPersisted = useCallback(async () => {
     try {
@@ -64,7 +46,7 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       setFolder(settings.folder ?? '')
       setToken(settings.token ?? '')
       setAutoStart(settings.autoStart)
-      applyStatus(share)
+      setStatus(share)
       if (share.running && settings.autoStart) {
         setRestoredNote(true)
       }
@@ -75,16 +57,11 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       )
       setHydrated(true)
     }
-  }, [api, applyStatus])
+  }, [api, setStatus])
 
   useEffect(() => {
     void loadPersisted()
   }, [loadPersisted])
-
-  useEffect(() => {
-    const id = window.setInterval(() => void refreshStatus(), 2500)
-    return () => window.clearInterval(id)
-  }, [refreshStatus])
 
   useEffect(() => {
     if (!hydrated) return
@@ -132,7 +109,10 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       setRestoredNote(false)
       toast.success('Compartiendo')
     }
-    await refreshStatus()
+    const next = await refreshStatus()
+    if (!next) {
+      toast.error('No se pudo leer el estado.')
+    }
     setBusy(false)
   }
 
@@ -147,7 +127,10 @@ export function ShareSettings({ onOpenLocal, onStatusChange }: ShareSettingsProp
       setRestoredNote(false)
       toast.success('Detenido')
     }
-    await refreshStatus()
+    const next = await refreshStatus()
+    if (!next) {
+      toast.error('No se pudo leer el estado.')
+    }
     setBusy(false)
   }
 
