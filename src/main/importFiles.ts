@@ -15,7 +15,7 @@ import type {
   RemoteImportResult,
   RemoteUploadResult
 } from '../shared/types'
-import { copyTree } from './fsCopy'
+import { copyTree, dirTotalBytes } from './fsCopy'
 import { peerHttp, remoteUpload } from './remote'
 import { resolveSafe } from './shareServer'
 
@@ -113,7 +113,8 @@ function rejectSelfCopy(
 /** Copy absolute OS paths into the local share at destPath (relative). */
 export async function importLocalPaths(
   shareRoot: string | null,
-  req: ImportLocalRequest
+  req: ImportLocalRequest,
+  onProgress?: (copiedBytes: number, totalBytes: number) => void
 ): Promise<ImportLocalResult> {
   if (!shareRoot) {
     return { ok: false, imported: 0, error: 'No hay carpeta compartida configurada.' }
@@ -139,12 +140,27 @@ export async function importLocalPaths(
     return { ok: false, imported: 0, error: msg }
   }
 
-  let imported = 0
+  const checkedSources: string[] = []
   for (const source of sources) {
     const checked = validateSource(source)
-    if (!checked.ok) return { ok: false, imported, error: checked.error }
+    if (!checked.ok) return { ok: false, imported: 0, error: checked.error }
+    checkedSources.push(checked.abs)
+  }
 
-    const name = uniqueNameInDir(destDir, basename(checked.abs))
+  let totalBytes = 0
+  const sourceSizes: number[] = []
+  for (const abs of checkedSources) {
+    const bytes = await dirTotalBytes(abs)
+    sourceSizes.push(bytes)
+    totalBytes += bytes
+  }
+  onProgress?.(0, totalBytes)
+
+  let imported = 0
+  let completedBytes = 0
+  for (let i = 0; i < checkedSources.length; i++) {
+    const abs = checkedSources[i]
+    const name = uniqueNameInDir(destDir, basename(abs))
     const destAbs = join(destDir, name)
     try {
       resolveSafe(shareRoot, relative(shareReal, destAbs) || name)
@@ -152,11 +168,16 @@ export async function importLocalPaths(
       return { ok: false, imported, error: 'Ruta no permitida (path traversal bloqueado).' }
     }
 
-    const blocked = rejectSelfCopy(shareReal, checked.abs, destDir, destAbs)
+    const blocked = rejectSelfCopy(shareReal, abs, destDir, destAbs)
     if (blocked) return { ok: false, imported, error: blocked }
 
     try {
-      await copyTree(checked.abs, destAbs)
+      const treeProgress = { files: 0, bytes: 0 }
+      await copyTree(abs, destAbs, treeProgress, (copiedInSource) => {
+        onProgress?.(completedBytes + copiedInSource, totalBytes)
+      })
+      completedBytes += sourceSizes[i] ?? treeProgress.bytes
+      onProgress?.(completedBytes, totalBytes)
       imported++
       // Yield between top-level sources so concurrent IPC can run.
       await yieldToEventLoop()
@@ -164,7 +185,7 @@ export async function importLocalPaths(
       return {
         ok: false,
         imported,
-        error: e instanceof Error ? e.message : `No se pudo copiar ${checked.abs}.`
+        error: e instanceof Error ? e.message : `No se pudo copiar ${abs}.`
       }
     }
   }
@@ -174,7 +195,8 @@ export async function importLocalPaths(
 /** Copy absolute paths into an arbitrary absolute directory (e.g. user-chosen export folder). */
 export async function copyPathsToDirectory(
   sources: string[],
-  destDir: string
+  destDir: string,
+  onProgress?: (copiedBytes: number, totalBytes: number) => void
 ): Promise<{ ok: boolean; copied: number; destPaths: string[]; error?: string }> {
   if (typeof destDir !== 'string' || !destDir.trim() || !isAbsolute(destDir)) {
     return { ok: false, copied: 0, destPaths: [], error: 'La carpeta destino debe ser una ruta absoluta.' }
@@ -197,17 +219,37 @@ export async function copyPathsToDirectory(
     }
   }
 
-  const destPaths: string[] = []
-  let copied = 0
+  const checkedSources: string[] = []
   for (const source of sources) {
     const checked = validateSource(source)
-    if (!checked.ok) return { ok: false, copied, destPaths, error: checked.error }
+    if (!checked.ok) return { ok: false, copied: 0, destPaths: [], error: checked.error }
+    checkedSources.push(checked.abs)
+  }
 
-    const name = uniqueNameInDir(destReal, basename(checked.abs))
+  let totalBytes = 0
+  const sourceSizes: number[] = []
+  for (const abs of checkedSources) {
+    const bytes = await dirTotalBytes(abs)
+    sourceSizes.push(bytes)
+    totalBytes += bytes
+  }
+  onProgress?.(0, totalBytes)
+
+  const destPaths: string[] = []
+  let copied = 0
+  let completedBytes = 0
+  for (let i = 0; i < checkedSources.length; i++) {
+    const abs = checkedSources[i]
+    const name = uniqueNameInDir(destReal, basename(abs))
     const destAbs = join(destReal, name)
 
     try {
-      await copyTree(checked.abs, destAbs)
+      const treeProgress = { files: 0, bytes: 0 }
+      await copyTree(abs, destAbs, treeProgress, (copiedInSource) => {
+        onProgress?.(completedBytes + copiedInSource, totalBytes)
+      })
+      completedBytes += sourceSizes[i] ?? treeProgress.bytes
+      onProgress?.(completedBytes, totalBytes)
       destPaths.push(destAbs)
       copied++
       await yieldToEventLoop()
@@ -216,7 +258,7 @@ export async function copyPathsToDirectory(
         ok: false,
         copied,
         destPaths,
-        error: e instanceof Error ? e.message : `No se pudo copiar ${checked.abs}.`
+        error: e instanceof Error ? e.message : `No se pudo copiar ${abs}.`
       }
     }
   }

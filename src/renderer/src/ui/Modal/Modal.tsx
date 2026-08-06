@@ -13,6 +13,8 @@ export interface ModalProps {
   children: ReactNode
   footer?: ReactNode
   size?: 'sm' | 'md' | 'lg'
+  /** Minimal chrome: no header/footer; Escape and overlay click do not close. */
+  bare?: boolean
 }
 
 export function Modal({
@@ -21,14 +23,17 @@ export function Modal({
   title,
   children,
   footer,
-  size = 'sm'
+  size = 'sm',
+  bare = false
 }: ModalProps): ReactElement | null {
   const dialogRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const onCloseRef = useRef(onClose)
+  const bareRef = useRef(bare)
   const titleId = useId()
 
   onCloseRef.current = onClose
+  bareRef.current = bare
 
   useEffect(() => {
     if (!open) return
@@ -38,6 +43,7 @@ export function Modal({
 
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
+        if (bareRef.current) return
         e.preventDefault()
         onCloseRef.current()
         return
@@ -88,30 +94,34 @@ export function Modal({
       className={styles.overlay}
       role="presentation"
       onMouseDown={(e) => {
+        if (bare) return
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <div
         ref={dialogRef}
-        className={cx(styles.dialog, styles[`size-${size}`])}
+        className={cx(styles.dialog, styles[`size-${size}`], bare && styles.bare)}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={title ? titleId : undefined}
+        aria-labelledby={!bare && title ? titleId : undefined}
+        aria-label={bare ? 'Clave' : undefined}
       >
-        <div className={styles.header}>
-          {title ? (
-            <h2 id={titleId} className={styles.title}>
-              {title}
-            </h2>
-          ) : (
-            <span />
-          )}
-          <button type="button" className={styles.close} aria-label="Cerrar" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className={styles.body}>{children}</div>
-        {footer ? <div className={styles.footer}>{footer}</div> : null}
+        {!bare ? (
+          <div className={styles.header}>
+            {title ? (
+              <h2 id={titleId} className={styles.title}>
+                {title}
+              </h2>
+            ) : (
+              <span />
+            )}
+            <button type="button" className={styles.close} aria-label="Cerrar" onClick={onClose}>
+              ×
+            </button>
+          </div>
+        ) : null}
+        <div className={cx(styles.body, bare && styles.bodyBare)}>{children}</div>
+        {!bare && footer ? <div className={styles.footer}>{footer}</div> : null}
       </div>
     </div>,
     document.body

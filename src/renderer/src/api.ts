@@ -34,6 +34,8 @@ function createStub(): AntishareApi {
     prepareDrag: async () => ({ ok: false, error: stubError('prepareDrag') }),
     listPeers: async () => [],
     onPeersUpdate: () => () => undefined,
+    onImportProgress: () => () => undefined,
+    onExportProgress: () => () => undefined,
     addManualPeer: async () => ({ ok: false, error: stubError('addManualPeer') }),
     removeManualPeer: async () => ({ ok: false }),
     remoteList: async () => ({ ok: false, error: stubError('remoteList') }),

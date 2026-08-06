@@ -83,6 +83,15 @@
   min-height: 0;
 }
 
+.bodyBare {
+  padding: var(--space-5);
+}
+
+.bare {
+  max-width: 280px;
+  border-radius: var(--radius-md);
+}
+
 .footer {
   display: flex;
   flex-wrap: wrap;

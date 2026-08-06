@@ -1,6 +1,12 @@
 /**
  * Export share items (local or remote) to a user-chosen absolute folder.
  * Reuses prepareDrag materialization + async copyTree.
+ *
+ * Progress model:
+ * - Phase 1 (prepare/download): emit 0/1 so the UI can show a 0% bar while remotes
+ *   materialize; no byte totals yet (download size unknown until staged).
+ * - Phase 2 (copy to dest): real byte progress via copyPathsToDirectory after files
+ *   exist on disk (local share path or DRAG_DIR staging).
  */
 import type { ExportItemsRequest, ExportItemsResult } from '../shared/types'
 import { handlePrepareDrag } from './drag'
@@ -8,12 +14,16 @@ import { copyPathsToDirectory } from './importFiles'
 
 export async function exportItemsToFolder(
   localRoot: string | null,
-  req: ExportItemsRequest
+  req: ExportItemsRequest,
+  onProgress?: (copiedBytes: number, totalBytes: number) => void
 ): Promise<ExportItemsResult> {
   const items = Array.isArray(req.items) ? req.items : []
   if (items.length === 0) {
     return { ok: false, exported: 0, error: 'No hay ítems para exportar.' }
   }
+
+  // Phase 1: prepare (local resolve / remote download to staging). Bar at 0%.
+  onProgress?.(0, 1)
 
   const sources: string[] = []
   for (const item of items) {
@@ -46,7 +56,8 @@ export async function exportItemsToFolder(
     sources.push(prepared.filePath)
   }
 
-  const copied = await copyPathsToDirectory(sources, req.destDir)
+  // Phase 2: copy materialized paths with real byte totals.
+  const copied = await copyPathsToDirectory(sources, req.destDir, onProgress)
   if (!copied.ok) {
     return { ok: false, exported: copied.copied, destPaths: copied.destPaths, error: copied.error }
   }

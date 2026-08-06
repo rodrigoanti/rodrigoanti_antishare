@@ -6,6 +6,8 @@ import type {
   FsRemoveRequest,
   FsRenameRequest,
   ImportLocalRequest,
+  ImportProgress,
+  ExportProgress,
   Peer,
   PeerAddManualRequest,
   PeerRemoveManualRequest,
@@ -40,6 +42,16 @@ const api: AntishareApi = {
     const handler = (_event: Electron.IpcRendererEvent, peers: Peer[]): void => cb(peers)
     ipcRenderer.on('peers:onUpdate', handler)
     return () => ipcRenderer.removeListener('peers:onUpdate', handler)
+  },
+  onImportProgress: (cb: (p: ImportProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, p: ImportProgress): void => cb(p)
+    ipcRenderer.on('files:importProgress', handler)
+    return () => ipcRenderer.removeListener('files:importProgress', handler)
+  },
+  onExportProgress: (cb: (p: ExportProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, p: ExportProgress): void => cb(p)
+    ipcRenderer.on('files:exportProgress', handler)
+    return () => ipcRenderer.removeListener('files:exportProgress', handler)
   },
   addManualPeer: (req: PeerAddManualRequest) => ipcRenderer.invoke('peers:addManual', req),
   removeManualPeer: (req: PeerRemoveManualRequest) =>

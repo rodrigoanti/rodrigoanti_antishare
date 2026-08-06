@@ -266,16 +266,69 @@ export function registerIpc(): void {
   })
   ipcMain.handle('remote:download', async (_e, req: RemoteDownloadRequest) => remoteDownload(req))
   ipcMain.handle('remote:upload', async (_e, req: RemoteUploadRequest) => remoteUpload(req))
-  ipcMain.handle('files:importLocal', async (_e, req: ImportLocalRequest) =>
-    importLocalPaths(resolveLocalRoot(), req)
-  )
+  ipcMain.handle('files:importLocal', async (event, req: ImportLocalRequest) => {
+    let lastEmit = 0
+    let lastCopied = 0
+    let lastTotal = 0
+    const emit = (copiedBytes: number, totalBytes: number, done?: boolean): void => {
+      lastCopied = copiedBytes
+      lastTotal = totalBytes
+      const now = Date.now()
+      if (!done && now - lastEmit < 50 && copiedBytes < totalBytes) return
+      lastEmit = now
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('files:importProgress', {
+          copiedBytes,
+          totalBytes,
+          ...(done ? { done: true } : {})
+        })
+      }
+    }
+    try {
+      const result = await importLocalPaths(resolveLocalRoot(), req, (copiedBytes, totalBytes) => {
+        emit(copiedBytes, totalBytes)
+      })
+      emit(lastTotal || lastCopied, lastTotal, true)
+      return result
+    } catch (err) {
+      emit(lastCopied, lastTotal, true)
+      throw err
+    }
+  })
   ipcMain.handle('files:importRemote', async (_e, req: RemoteImportRequest) =>
     importRemotePaths(req)
   )
   ipcMain.handle(
     'files:exportItems',
-    async (_e, req: ExportItemsRequest): Promise<ExportItemsResult> =>
-      exportItemsToFolder(resolveLocalRoot(), req)
+    async (event, req: ExportItemsRequest): Promise<ExportItemsResult> => {
+      let lastEmit = 0
+      let lastCopied = 0
+      let lastTotal = 0
+      const emit = (copiedBytes: number, totalBytes: number, done?: boolean): void => {
+        lastCopied = copiedBytes
+        lastTotal = totalBytes
+        const now = Date.now()
+        if (!done && now - lastEmit < 50 && totalBytes > 0 && copiedBytes < totalBytes) return
+        lastEmit = now
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('files:exportProgress', {
+            copiedBytes,
+            totalBytes,
+            ...(done ? { done: true } : {})
+          })
+        }
+      }
+      try {
+        const result = await exportItemsToFolder(resolveLocalRoot(), req, (copiedBytes, totalBytes) => {
+          emit(copiedBytes, totalBytes)
+        })
+        emit(lastTotal || lastCopied, lastTotal, true)
+        return result
+      } catch (err) {
+        emit(lastCopied, lastTotal, true)
+        throw err
+      }
+    }
   )
   ipcMain.handle('files:mkdir', async (_e, req: FsMkdirRequest) =>
     mkdirLocal(resolveLocalRoot(), req)

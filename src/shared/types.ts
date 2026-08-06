@@ -207,6 +207,16 @@ export interface ImportLocalResult {
   error?: string
 }
 
+/** Byte progress for local import / export (main → renderer). */
+export interface ImportProgress {
+  copiedBytes: number
+  totalBytes: number
+  done?: boolean
+}
+
+/** Same shape as ImportProgress; used by files:exportProgress. */
+export type ExportProgress = ImportProgress
+
 /** Drop-import absolute OS paths onto a remote peer share (files and folder trees). */
 export interface RemoteImportRequest {
   baseUrl: string
@@ -312,6 +322,10 @@ export interface AntishareApi {
   prepareDrag: (req: PrepareDragRequest) => Promise<PrepareDragResult>
   listPeers: () => Promise<Peer[]>
   onPeersUpdate: (cb: (peers: Peer[]) => void) => () => void
+  /** Subscribe to byte progress while importLocal runs. Returns unsubscribe. */
+  onImportProgress: (cb: (p: ImportProgress) => void) => () => void
+  /** Subscribe to byte progress while exportItems runs. Returns unsubscribe. */
+  onExportProgress: (cb: (p: ExportProgress) => void) => () => void
   addManualPeer: (req: PeerAddManualRequest) => Promise<PeerAddManualResult>
   removeManualPeer: (req: PeerRemoveManualRequest) => Promise<{ ok: boolean }>
   remoteList: (req: RemoteListRequest) => Promise<RemoteListResult>

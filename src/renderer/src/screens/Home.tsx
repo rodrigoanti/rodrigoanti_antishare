@@ -9,6 +9,7 @@ import {
   type ReactElement
 } from 'react'
 import {
+  ArrowDown,
   ArrowUp,
   Folder,
   FolderPlus,
@@ -40,7 +41,7 @@ import { useShareStatus } from '../shareStatus'
 import { applyTheme, type Theme } from '../theme'
 import { Button, ContextMenu, Input, LockBadge, Modal, toast } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
-import { FolderIcon } from '../ui/FolderIcon'
+import { fileGlyphKind, FolderIcon } from '../ui/FolderIcon'
 import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
 
 const ICON_STROKE = 1.75
@@ -48,6 +49,17 @@ const ICON_TOOL = 15
 const ICON_SIDE = 16
 
 const VIEW_KEY = 'antishare.finderView'
+
+type SortKey = 'name' | 'date' | 'size' | 'type'
+type SortDir = 'asc' | 'desc'
+type SortPref = { key: SortKey; dir: SortDir }
+
+const SORT_LABELS: Record<SortKey, string> = {
+  name: 'Nombre',
+  date: 'Fecha',
+  size: 'Tamaño',
+  type: 'Tipo'
+}
 
 type Nav =
   | { kind: 'root' }
@@ -58,6 +70,71 @@ function navId(n: Nav): string {
   if (n.kind === 'peer') return `peer:${n.peer.baseUrl}:${n.path}`
   if (n.kind === 'local') return `local:${n.path}`
   return 'root'
+}
+
+function sortStorageKey(nav: Nav): string {
+  if (nav.kind === 'root') return 'antishare.sort:root:.'
+  if (nav.kind === 'local') return `antishare.sort:local:${nav.path || '.'}`
+  return `antishare.sort:${nav.peer.baseUrl}:${nav.path || '.'}`
+}
+
+function isSortKey(v: unknown): v is SortKey {
+  return v === 'name' || v === 'date' || v === 'size' || v === 'type'
+}
+
+function isSortDir(v: unknown): v is SortDir {
+  return v === 'asc' || v === 'desc'
+}
+
+function normalizeSortPref(raw: unknown): SortPref | null {
+  if (!raw || typeof raw !== 'object') return null
+  const pref = raw as { key?: unknown; dir?: unknown }
+  const keyRaw = pref.key === 'mtime' ? 'date' : pref.key
+  if (!isSortKey(keyRaw) || !isSortDir(pref.dir)) return null
+  return { key: keyRaw, dir: pref.dir }
+}
+
+function readSortPref(nav: Nav): SortPref {
+  try {
+    const raw = localStorage.getItem(sortStorageKey(nav))
+    if (raw) {
+      const pref = normalizeSortPref(JSON.parse(raw) as unknown)
+      if (pref) return pref
+    }
+  } catch {
+    /* ignore */
+  }
+  return { key: 'name', dir: 'asc' }
+}
+
+function writeSortPref(nav: Nav, pref: SortPref): void {
+  try {
+    localStorage.setItem(sortStorageKey(nav), JSON.stringify(pref))
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function compareEntries(a: DirEntry, b: DirEntry, key: SortKey, dir: SortDir): number {
+  if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+  let cmp = 0
+  switch (key) {
+    case 'name':
+      cmp = a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })
+      break
+    case 'date':
+      cmp = a.mtime - b.mtime
+      break
+    case 'size':
+      cmp = a.size - b.size
+      break
+    case 'type': {
+      cmp = fileGlyphKind(a.name, a.isDir).localeCompare(fileGlyphKind(b.name, b.isDir), 'es')
+      if (cmp === 0) cmp = a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })
+      break
+    }
+  }
+  return dir === 'asc' ? cmp : -cmp
 }
 
 interface HomeProps {
@@ -120,6 +197,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
   )
   const [viewMode, setViewMode] = useState<FinderViewMode>(readViewMode)
+  const [sort, setSort] = useState<SortPref>(() => readSortPref({ kind: 'root' }))
   const [peers, setPeers] = useState<Peer[]>([])
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -132,6 +210,8 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   const [tokenError, setTokenError] = useState<string | null>(null)
   const [busyFile, setBusyFile] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [importXfer, setImportXfer] = useState<{ copied: number; total: number } | null>(null)
+  const [exportXfer, setExportXfer] = useState<{ copied: number; total: number } | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const [folderDropPath, setFolderDropPath] = useState<string | null>(null)
   const [renameMode, setRenameMode] = useState<
@@ -181,12 +261,103 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }, [status?.running])
 
   useEffect(() => {
+    let importClearTimer: number | undefined
+    let exportClearTimer: number | undefined
+
+    const unsubImport = api.onImportProgress((p) => {
+      if (importClearTimer !== undefined) {
+        window.clearTimeout(importClearTimer)
+        importClearTimer = undefined
+      }
+      setImportXfer({ copied: p.copiedBytes, total: p.totalBytes })
+      if (p.done || (p.totalBytes > 0 && p.copiedBytes >= p.totalBytes)) {
+        importClearTimer = window.setTimeout(() => {
+          setImportXfer(null)
+          importClearTimer = undefined
+        }, 600)
+      }
+    })
+
+    const unsubExport = api.onExportProgress((p) => {
+      if (exportClearTimer !== undefined) {
+        window.clearTimeout(exportClearTimer)
+        exportClearTimer = undefined
+      }
+      setExportXfer({ copied: p.copiedBytes, total: p.totalBytes })
+      if (p.done || (p.totalBytes > 0 && p.copiedBytes >= p.totalBytes)) {
+        exportClearTimer = window.setTimeout(() => {
+          setExportXfer(null)
+          exportClearTimer = undefined
+        }, 600)
+      }
+    })
+
+    return () => {
+      unsubImport()
+      unsubExport()
+      if (importClearTimer !== undefined) window.clearTimeout(importClearTimer)
+      if (exportClearTimer !== undefined) window.clearTimeout(exportClearTimer)
+    }
+  }, [api])
+
+  const transfer = useMemo(() => {
+    const parts = [importXfer, exportXfer].filter(
+      (t): t is { copied: number; total: number } => t != null
+    )
+    if (parts.length === 0) return null
+    return {
+      copied: parts.reduce((s, t) => s + t.copied, 0),
+      total: parts.reduce((s, t) => s + t.total, 0)
+    }
+  }, [importXfer, exportXfer])
+
+  useEffect(() => {
     try {
       localStorage.setItem(VIEW_KEY, viewMode)
     } catch {
       /* ignore */
     }
   }, [viewMode])
+
+  useEffect(() => {
+    setSort(readSortPref(nav))
+  }, [nav])
+
+  const sortedEntries = useMemo(
+    () => [...entries].sort((a, b) => compareEntries(a, b, sort.key, sort.dir)),
+    [entries, sort.key, sort.dir]
+  )
+
+  function setSortKey(key: SortKey): void {
+    setSort((prev) => {
+      if (prev.key === key) return prev
+      const next: SortPref = {
+        key,
+        dir: key === 'date' || key === 'size' ? 'desc' : 'asc'
+      }
+      writeSortPref(nav, next)
+      return next
+    })
+  }
+
+  function toggleSortDir(): void {
+    setSort((prev) => {
+      const next: SortPref = { ...prev, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      writeSortPref(nav, next)
+      return next
+    })
+  }
+
+  function cycleSortColumn(key: SortKey): void {
+    setSort((prev) => {
+      const next: SortPref =
+        prev.key === key
+          ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+          : { key, dir: key === 'date' || key === 'size' ? 'desc' : 'asc' }
+      writeSortPref(nav, next)
+      return next
+    })
+  }
 
   useEffect(() => {
     let alive = true
@@ -310,11 +481,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
         return false
       }
       if (activeNavIdRef.current !== myNavId) return false
-      const sorted = [...(result.entries ?? [])].sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-        return a.name.localeCompare(b.name, 'es')
-      })
-      setEntries(sorted)
+      setEntries(result.entries ?? [])
       setListFailed(false)
       setErrorRaw(null)
       setListUnreachable(false)
@@ -425,21 +592,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [nav.kind, renameMode, pendingDelete, pendingPeer, opBusy, entries, selectedKey])
-
-  function goUp(): void {
-    if (nav.kind === 'root') return
-    if (nav.kind === 'local') {
-      if (!nav.path) return
-      const parts = nav.path.split('/').filter(Boolean)
-      parts.pop()
-      setNav({ kind: 'local', path: parts.join('/') })
-      return
-    }
-    if (!nav.path) return
-    const parts = nav.path.split('/').filter(Boolean)
-    parts.pop()
-    setNav({ kind: 'peer', peer: nav.peer, path: parts.join('/'), token: nav.token })
-  }
 
   function openLocalRoot(): void {
     if (!running) {
@@ -1099,8 +1251,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   const showLoading = loading && !hasLoadedOnce.current && nav.kind !== 'root'
   const localOnline = running
-  const canGoUp =
-    (nav.kind === 'local' && Boolean(nav.path)) || (nav.kind === 'peer' && Boolean(nav.path))
   const sidebarLocalActive = nav.kind === 'local'
   const sidebarPeerActive = nav.kind === 'peer' ? nav.peer.baseUrl : null
 
@@ -1189,6 +1339,11 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     )
   }
 
+  const transferPct =
+    transfer && transfer.total > 0
+      ? Math.min(100, Math.round((transfer.copied / transfer.total) * 100))
+      : null
+
   return (
     <section
       className={`finder${importing || shareStarting || opBusy ? ' finder-drag-busy' : ''}`}
@@ -1198,16 +1353,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     >
       <header className={`finder-toolbar${contentScrolled ? ' scrolled' : ''}`}>
         <div className="finder-toolbar-actions" role="toolbar" aria-label="Navegación">
-          <button
-            type="button"
-            className="finder-tool-btn"
-            aria-label="Subir nivel"
-            title="Subir nivel"
-            disabled={!canGoUp}
-            onClick={goUp}
-          >
-            <ArrowUp size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-          </button>
           {importing ? (
             <span className="finder-import-status" role="status" aria-live="polite">
               Importando…
@@ -1239,6 +1384,37 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
               </button>
             </div>
           ) : null}
+          <div className="finder-sort" role="group" aria-label="Orden">
+            <label className="finder-sort-label" htmlFor="finder-sort-key">
+              Orden
+            </label>
+            <select
+              id="finder-sort-key"
+              className="finder-sort-select"
+              value={sort.key}
+              aria-label="Criterio de orden"
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+            >
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+                <option key={k} value={k}>
+                  {SORT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="finder-tool-btn"
+              aria-label={sort.dir === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
+              title={sort.dir === 'asc' ? 'Ascendente' : 'Descendente'}
+              onClick={toggleSortDir}
+            >
+              {sort.dir === 'asc' ? (
+                <ArrowUp size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              ) : (
+                <ArrowDown size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              )}
+            </button>
+          </div>
           <div className="finder-view-toggle" role="group" aria-label="Vista">
             <button
               type="button"
@@ -1357,21 +1533,49 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                 {showLoading && <div className="state-box">Cargando…</div>}
                 {!showLoading &&
                   viewMode === 'list' &&
-                  (entries.length > 0 || renameMode?.kind === 'create') && (
-                    <div className="finder-list-head" aria-hidden="true">
+                  (sortedEntries.length > 0 || renameMode?.kind === 'create') && (
+                    <div className="finder-list-head" role="row">
                       <span />
-                      <span>Nombre</span>
-                      <span>Estado</span>
-                      <span>Modificado / tamaño</span>
+                      <button
+                        type="button"
+                        className={`finder-list-sort${sort.key === 'name' ? ' on' : ''}`}
+                        aria-label={`Ordenar por nombre${sort.key === 'name' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
+                        onClick={() => cycleSortColumn('name')}
+                      >
+                        Nombre
+                        {sort.key === 'name' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className={`finder-list-sort${sort.key === 'type' ? ' on' : ''}`}
+                        aria-label={`Ordenar por tipo${sort.key === 'type' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
+                        onClick={() => cycleSortColumn('type')}
+                      >
+                        Estado
+                        {sort.key === 'type' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className={`finder-list-sort${sort.key === 'date' || sort.key === 'size' ? ' on' : ''}`}
+                        aria-label={`Ordenar por fecha${sort.key === 'date' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
+                        onClick={() => cycleSortColumn('date')}
+                      >
+                        Modificado / tamaño
+                        {sort.key === 'date' || sort.key === 'size'
+                          ? sort.dir === 'asc'
+                            ? ' ↑'
+                            : ' ↓'
+                          : ''}
+                      </button>
                       <span />
                     </div>
                   )}
                 {!showLoading &&
-                  entries.length === 0 &&
+                  sortedEntries.length === 0 &&
                   !listFailed &&
                   renameMode?.kind !== 'create' &&
                   renderEmptyFolder()}
-                {!showLoading && (entries.length > 0 || renameMode?.kind === 'create') && (
+                {!showLoading && (sortedEntries.length > 0 || renameMode?.kind === 'create') && (
                   <ul
                     className={viewMode === 'icons' ? 'finder-icons' : 'finder-list'}
                     aria-label="Contenido"
@@ -1391,7 +1595,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                         />
                       </li>
                     ) : null}
-                    {entries.map((entry) => (
+                    {sortedEntries.map((entry) => (
                       <li key={entry.path}>
                         <FolderItem
                           viewMode={viewMode}
@@ -1479,6 +1683,18 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
       </div>
 
       <footer className="finder-statusbar">
+        {transfer && transferPct != null ? (
+          <div
+            className="transfer-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={transferPct}
+            aria-label={`Transferencia ${transferPct}%`}
+          >
+            <div className="transfer-progress-bar" style={{ width: `${transferPct}%` }} />
+          </div>
+        ) : null}
         <nav className="finder-crumbs" aria-label="Ruta">
           {crumbs.length === 0 ? (
             <span className="finder-crumb current">
@@ -1576,31 +1792,13 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
       <Modal
         open={Boolean(pendingPeer)}
+        bare
         onClose={() => {
           setPendingPeer(null)
           setTokenDraft('')
           setTokenError(null)
         }}
-        title={pendingPeer?.name ?? 'Clave'}
         size="sm"
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              size="md"
-              onClick={() => {
-                setPendingPeer(null)
-                setTokenDraft('')
-                setTokenError(null)
-              }}
-            >
-              Cancelar
-            </Button>
-            <Button variant="primary" size="md" type="submit" form="peer-token-form">
-              Abrir
-            </Button>
-          </>
-        }
       >
         <form id="peer-token-form" className="form-grid" onSubmit={confirmToken}>
           <Input
@@ -1609,6 +1807,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
             type="password"
             autoComplete="off"
             aria-label="Clave"
+            placeholder="Clave"
             value={tokenDraft}
             onChange={(e) => setTokenDraft(e.target.value)}
           />
