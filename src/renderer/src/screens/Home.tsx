@@ -27,9 +27,11 @@ import {
   beginInternalFileDrag,
   endInternalFileDrag,
   getInternalDragSourceParent,
+  getInternalDragSourcePath,
   isInternalFileDragActive,
   isOsDropAlreadyInFolder,
   isOsFileDrag,
+  isSharePathInsideOrEqual,
   markInternalDrag,
   osDropPaths,
   osDropSingleDirectoryPath
@@ -38,6 +40,7 @@ import { useShareStatus } from '../shareStatus'
 import { applyTheme, type Theme } from '../theme'
 import { Button, ContextMenu, Input, LockBadge, Modal, toast } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
+import { FolderIcon } from '../ui/FolderIcon'
 import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
 
 const ICON_STROKE = 1.75
@@ -130,6 +133,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   const [busyFile, setBusyFile] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [dropActive, setDropActive] = useState(false)
+  const [folderDropPath, setFolderDropPath] = useState<string | null>(null)
   const [renameMode, setRenameMode] = useState<
     { kind: 'existing'; path: string; value: string } | { kind: 'create'; value: string } | null
   >(null)
@@ -666,13 +670,13 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }
 
   /** HTML5 internal drag only — never starts native OS startDrag (no Finder/Explorer drag-out). */
-  function handleEntryDragStart(_entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+  function handleEntryDragStart(entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
     if (nav.kind === 'root') {
       e.preventDefault()
       return
     }
     markInternalDrag(e.dataTransfer)
-    beginInternalFileDrag(nav.path || '')
+    beginInternalFileDrag(nav.path || '', entry.path)
   }
 
   async function saveEntryAs(entry: DirEntry): Promise<void> {
@@ -742,6 +746,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     }
     const end = (): void => {
       endInternalFileDrag()
+      setFolderDropPath(null)
       restoreRendererFocus()
     }
     // dragend: capture. drop: bubble so pane handlers see the flag first.
@@ -756,6 +761,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   useEffect(() => {
     dropDepthRef.current = 0
     setDropActive(false)
+    setFolderDropPath(null)
   }, [nav])
 
   /** Internal drag whose source parent is the folder currently open. */
@@ -769,6 +775,150 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   function isOsSameFolderDrop(dt: DataTransfer): boolean {
     return nav.kind === 'local' && isOsDropAlreadyInFolder(dt, status?.folder, nav.path || '')
+  }
+
+  /** Whether dest folder can accept the current drag (internal move or OS import). */
+  function folderDropEffect(dest: DirEntry, e: DragEvent): 'move' | 'copy' | null {
+    if (!dest.isDir || nav.kind === 'root' || importing || opBusy) return null
+
+    if (isInternalFileDragActive()) {
+      const srcPath = getInternalDragSourcePath()
+      if (!srcPath) return null
+      if (srcPath === dest.path) return null
+      if (isSharePathInsideOrEqual(srcPath, dest.path)) return null
+      const srcParent = getInternalDragSourceParent()
+      if (srcParent !== null && srcParent === dest.path) return null
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      return 'move'
+    }
+
+    if (!isOsFileDrag(e.dataTransfer)) return null
+    if (nav.kind === 'local' && isOsDropAlreadyInFolder(e.dataTransfer, status?.folder, dest.path)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'none'
+      return null
+    }
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    return 'copy'
+  }
+
+  function handleFolderDragOver(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+    e.stopPropagation()
+    const effect = folderDropEffect(dest, e)
+    if (!effect) {
+      setFolderDropPath(null)
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    setFolderDropPath(dest.path)
+    setDropActive(false)
+  }
+
+  function handleFolderDragLeave(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+    e.stopPropagation()
+    const related = e.relatedTarget
+    if (related instanceof Node && e.currentTarget.contains(related)) return
+    setFolderDropPath((cur) => (cur === dest.path ? null : cur))
+  }
+
+  async function importOsDropTo(dt: DataTransfer, destPath: string, destName: string): Promise<void> {
+    if (nav.kind === 'root') return
+    const sources = osDropPaths(dt)
+    if (sources.length === 0) {
+      toast.error('No se pudo leer la ruta local.')
+      return
+    }
+    setImporting(true)
+    try {
+      if (nav.kind === 'local') {
+        const result = await api.importLocal({ sources, destPath: destPath || undefined })
+        if (!result.ok) {
+          toast.error(mapIpcError(result.error, 'No se pudo importar.'))
+          return
+        }
+        toast.success(
+          sources.length === 1
+            ? `Importado en «${destName}»`
+            : `${sources.length} importados en «${destName}»`
+        )
+      } else {
+        const result = await api.importRemote({
+          baseUrl: nav.peer.baseUrl,
+          sources,
+          destPath: destPath || undefined,
+          token: nav.token
+        })
+        if (!result.ok) {
+          toast.error(mapIpcError(result.error, 'No se pudo subir al peer.'))
+          return
+        }
+        toast.success(
+          sources.length === 1
+            ? `Subido a «${destName}»`
+            : `${sources.length} subidos a «${destName}»`
+        )
+      }
+      await loadContents({ silent: true })
+    } catch (err) {
+      toast.error(
+        mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
+      )
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  async function moveInternalToFolder(dest: DirEntry): Promise<void> {
+    if (nav.kind === 'root') return
+    const srcPath = getInternalDragSourcePath()
+    if (!srcPath) return
+    const srcName = srcPath.includes('/') ? srcPath.slice(srcPath.lastIndexOf('/') + 1) : srcPath
+    setOpBusy(true)
+    try {
+      const result =
+        nav.kind === 'local'
+          ? await api.moveLocal({ path: srcPath, destPath: dest.path })
+          : await api.remoteMove({
+              baseUrl: nav.peer.baseUrl,
+              path: srcPath,
+              destPath: dest.path,
+              token: nav.token
+            })
+      if (!result.ok) {
+        toast.error(mapIpcError(result.error, `No se pudo mover «${srcName}».`))
+        return
+      }
+      if (selectedKey === srcPath) setSelectedKey(null)
+      toast.success(`Movido a «${dest.name}»`)
+      await loadContents({ silent: true })
+    } catch (err) {
+      toast.error(
+        mapIpcError(err instanceof Error ? err.message : String(err), `No se pudo mover «${srcName}».`)
+      )
+    } finally {
+      setOpBusy(false)
+    }
+  }
+
+  function handleFolderDrop(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+    e.preventDefault()
+    e.stopPropagation()
+    const effect = folderDropEffect(dest, e)
+    const dt = e.dataTransfer
+    dropDepthRef.current = 0
+    setDropActive(false)
+    setFolderDropPath(null)
+
+    if (!effect) return
+
+    if (effect === 'move') {
+      void moveInternalToFolder(dest)
+      return
+    }
+    if (importing || !dt) return
+    void importOsDropTo(dt, dest.path, dest.name)
   }
 
   function rejectDropVisual(e: DragEvent): void {
@@ -854,6 +1004,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     e.preventDefault()
     dropDepthRef.current = 0
     setDropActive(false)
+    setFolderDropPath(null)
     if (isInternalFileDragActive()) {
       if (isInternalSameFolderDrag()) {
         // Same folder: no import, no toast spam — drop is a no-op.
@@ -864,7 +1015,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
         }
         return
       }
-      toast.error('No se puede soltar aquí un ítem arrastrado desde AntiShare.')
+      toast.error('Suelta el ítem sobre una carpeta para moverlo.')
       return
     }
     if (isOsSameFolderDrop(e.dataTransfer)) {
@@ -1046,7 +1197,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
       tabIndex={-1}
     >
       <header className={`finder-toolbar${contentScrolled ? ' scrolled' : ''}`}>
-        <div className="finder-toolbar-actions" role="toolbar" aria-label="Acciones">
+        <div className="finder-toolbar-actions" role="toolbar" aria-label="Navegación">
           <button
             type="button"
             className="finder-tool-btn"
@@ -1057,29 +1208,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           >
             <ArrowUp size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
           </button>
-          {nav.kind !== 'root' ? (
-            <button
-              type="button"
-              className="finder-tool-btn"
-              aria-label="Nueva carpeta"
-              title="Nueva carpeta"
-              disabled={opBusy || Boolean(renameMode)}
-              onClick={startNewFolder}
-            >
-              <FolderPlus size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-            </button>
-          ) : null}
-          {nav.kind !== 'root' ? (
-            <button
-              type="button"
-              className="finder-tool-btn"
-              aria-label="Actualizar"
-              title="Actualizar"
-              onClick={() => void loadContents({ silent: false })}
-            >
-              <RefreshCw size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-            </button>
-          ) : null}
           {importing ? (
             <span className="finder-import-status" role="status" aria-live="polite">
               Importando…
@@ -1087,59 +1215,55 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           ) : null}
         </div>
 
-        <nav className="finder-crumbs" aria-label="Ruta">
-          {crumbs.length === 0 ? (
-            <span className="finder-crumb current">Compartidos</span>
-          ) : (
-            crumbs.map((c, i) => (
-              <span key={`${c.label}-${i}`} className="finder-crumb-wrap">
-                {i > 0 && <span className="crumb-sep">›</span>}
-                <button
-                  type="button"
-                  className={`finder-crumb${i === crumbs.length - 1 ? ' current' : ''}`}
-                  onClick={c.go}
-                >
-                  {c.label}
-                </button>
-              </span>
-            ))
-          )}
-        </nav>
-
-        <div className="finder-view-toggle" role="group" aria-label="Vista">
-          <button
-            type="button"
-            className={viewMode === 'icons' ? 'finder-toggle on' : 'finder-toggle'}
-            aria-pressed={viewMode === 'icons'}
-            aria-label="Vista de iconos"
-            title="Iconos"
-            onClick={() => setViewMode('icons')}
-          >
-            <LayoutGrid size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={viewMode === 'list' ? 'finder-toggle on' : 'finder-toggle'}
-            aria-pressed={viewMode === 'list'}
-            aria-label="Vista de lista"
-            title="Lista"
-            onClick={() => setViewMode('list')}
-          >
-            <List size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-          </button>
+        <div className="finder-toolbar-view-cluster">
+          {nav.kind !== 'root' ? (
+            <div className="finder-toolbar-ops" role="toolbar" aria-label="Carpeta">
+              <button
+                type="button"
+                className="finder-tool-btn"
+                aria-label="Nueva carpeta"
+                title="Nueva carpeta"
+                disabled={opBusy || Boolean(renameMode)}
+                onClick={startNewFolder}
+              >
+                <FolderPlus size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="finder-tool-btn"
+                aria-label="Actualizar"
+                title="Actualizar"
+                onClick={() => void loadContents({ silent: false })}
+              >
+                <RefreshCw size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          <div className="finder-view-toggle" role="group" aria-label="Vista">
+            <button
+              type="button"
+              className={viewMode === 'icons' ? 'finder-toggle on' : 'finder-toggle'}
+              aria-pressed={viewMode === 'icons'}
+              aria-label="Vista de iconos"
+              title="Iconos"
+              onClick={() => setViewMode('icons')}
+            >
+              <LayoutGrid size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'list' ? 'finder-toggle on' : 'finder-toggle'}
+              aria-pressed={viewMode === 'list'}
+              aria-label="Vista de lista"
+              title="Lista"
+              onClick={() => setViewMode('list')}
+            >
+              <List size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="finder-toolbar-end">
-          <span
-            className={`finder-share-state${running ? ' on' : ''}`}
-            role="status"
-            aria-live="polite"
-            aria-label={running ? 'Compartiendo' : 'Sin compartir'}
-            title={running ? 'Compartiendo' : 'Sin compartir'}
-          >
-            <Radio size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-            <span className={`finder-share-dot${running ? ' on' : ''}`} aria-hidden="true" />
-          </span>
           <button
             type="button"
             className="finder-tool-btn"
@@ -1298,6 +1422,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                               : `${formatSize(entry.size, false)} · ${formatMtime(entry.mtime)}`
                           }
                           sizeLabel={formatSize(entry.size, entry.isDir)}
+                          dropActive={folderDropPath === entry.path}
                           onClick={() => {
                             if (renameMode) return
                             setSelectedKey(entry.path)
@@ -1312,6 +1437,24 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                             setMenu({ x: e.clientX, y: e.clientY, entry })
                           }}
                           onDragStart={(e) => handleEntryDragStart(entry, e)}
+                          onDragEnter={
+                            entry.isDir
+                              ? (e) => {
+                                  e.stopPropagation()
+                                  if (folderDropEffect(entry, e)) {
+                                    setFolderDropPath(entry.path)
+                                    setDropActive(false)
+                                  }
+                                }
+                              : undefined
+                          }
+                          onDragOver={
+                            entry.isDir ? (e) => handleFolderDragOver(entry, e) : undefined
+                          }
+                          onDragLeave={
+                            entry.isDir ? (e) => handleFolderDragLeave(entry, e) : undefined
+                          }
+                          onDrop={entry.isDir ? (e) => handleFolderDrop(entry, e) : undefined}
                         />
                       </li>
                     ))}
@@ -1334,6 +1477,45 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           </div>
         </div>
       </div>
+
+      <footer className="finder-statusbar">
+        <nav className="finder-crumbs" aria-label="Ruta">
+          {crumbs.length === 0 ? (
+            <span className="finder-crumb current">
+              <span className="finder-crumb-icon">
+                <FolderIcon size="sm" />
+              </span>
+              Compartidos
+            </span>
+          ) : (
+            crumbs.map((c, i) => (
+              <span key={`${c.label}-${i}`} className="finder-crumb-wrap">
+                {i > 0 && <span className="crumb-sep">›</span>}
+                <button
+                  type="button"
+                  className={`finder-crumb${i === crumbs.length - 1 ? ' current' : ''}`}
+                  onClick={c.go}
+                >
+                  <span className="finder-crumb-icon">
+                    <FolderIcon size="sm" />
+                  </span>
+                  {c.label}
+                </button>
+              </span>
+            ))
+          )}
+        </nav>
+        <span
+          className={`finder-share-state${running ? ' on' : ''}`}
+          role="status"
+          aria-live="polite"
+          aria-label={running ? 'Compartiendo' : 'Sin compartir'}
+          title={running ? 'Compartiendo' : 'Sin compartir'}
+        >
+          <Radio size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
+          <span className={`finder-share-dot${running ? ' on' : ''}`} aria-hidden="true" />
+        </span>
+      </footer>
 
       <ContextMenu
         open={Boolean(menu)}

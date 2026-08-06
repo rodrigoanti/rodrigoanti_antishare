@@ -2,9 +2,16 @@
  * mkdir / rename / remove inside a share root. All paths go through resolveSafe.
  * Names cannot be empty or contain /, \\ or :. Never mutate the share root itself.
  */
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, realpathSync } from 'fs'
-import { dirname, join, relative, sep } from 'path'
-import type { FsMkdirRequest, FsOpResult, FsRemoveRequest, FsRenameRequest } from '../shared/types'
+import { existsSync, mkdirSync, promises as fsp, renameSync, rmSync, statSync, realpathSync } from 'fs'
+import { basename, dirname, join, relative, sep } from 'path'
+import type {
+  FsMkdirRequest,
+  FsMoveRequest,
+  FsOpResult,
+  FsRemoveRequest,
+  FsRenameRequest
+} from '../shared/types'
+import { copyTree } from './fsCopy'
 import { resolveSafe } from './pathSafe'
 
 export class FsOpError extends Error {
@@ -53,6 +60,20 @@ function isShareRoot(root: string, abs: string): boolean {
 function wrap(fn: () => void): FsOpResult {
   try {
     fn()
+    return { ok: true }
+  } catch (e) {
+    if (e instanceof FsOpError) return { ok: false, error: e.message }
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.toLowerCase().includes('traversal')) {
+      return { ok: false, error: 'Ruta no permitida (path traversal bloqueado).' }
+    }
+    return { ok: false, error: msg }
+  }
+}
+
+async function wrapAsync(fn: () => Promise<void>): Promise<FsOpResult> {
+  try {
+    await fn()
     return { ok: true }
   } catch (e) {
     if (e instanceof FsOpError) return { ok: false, error: e.message }
@@ -132,6 +153,92 @@ export function renameInShare(root: string, relPath: string, newName: string): v
   renameSync(srcAbs, destSafe)
 }
 
+function isInsideAbs(parentAbs: string, childAbs: string): boolean {
+  const p = parentAbs.endsWith(sep) ? parentAbs : parentAbs + sep
+  return childAbs === parentAbs || childAbs.startsWith(p)
+}
+
+/**
+ * Move a file/folder to another folder inside the share (same basename).
+ * Same-device uses renameSync (instant). Cross-device (EXDEV) uses async copyTree + rm
+ * so the main process stays responsive; origin is only deleted after a successful copy.
+ */
+export async function moveInShare(
+  root: string,
+  relPath: string,
+  destParentRel: string
+): Promise<void> {
+  const rel = posixRel(relPath)
+  if (!rel || rel === '.') {
+    throw new FsOpError('No se puede mover la raíz del share.', 'forbidden')
+  }
+  let srcAbs: string
+  try {
+    srcAbs = resolveSafe(root, rel)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (!existsSync(srcAbs)) throw new FsOpError('No existe ese ítem.', 'notfound')
+  if (isShareRoot(root, srcAbs)) {
+    throw new FsOpError('No se puede mover la raíz del share.', 'forbidden')
+  }
+
+  let destParentAbs: string
+  try {
+    destParentAbs = resolveSafe(root, posixRel(destParentRel) || '.')
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+  if (!existsSync(destParentAbs) || !statSync(destParentAbs).isDirectory()) {
+    throw new FsOpError('La carpeta destino no existe.', 'notfound')
+  }
+
+  let srcReal = srcAbs
+  let destParentReal = destParentAbs
+  try {
+    srcReal = realpathSync(srcAbs)
+    destParentReal = realpathSync(destParentAbs)
+  } catch {
+    /* keep logical paths */
+  }
+
+  if (dirname(srcReal) === destParentReal) {
+    throw new FsOpError('Ese ítem ya está en esta carpeta.', 'exists')
+  }
+
+  const name = basename(srcAbs)
+  const destAbs = join(destParentAbs, name)
+  let destSafe: string
+  try {
+    const destRel = relative(rootReal(root), destAbs).split(sep).join('/')
+    destSafe = resolveSafe(root, destRel)
+  } catch {
+    throw new FsOpError('Path traversal blocked', 'traversal')
+  }
+
+  if (statSync(srcAbs).isDirectory() && isInsideAbs(srcReal, destParentReal)) {
+    throw new FsOpError('No se puede mover una carpeta dentro de sí misma.', 'forbidden')
+  }
+
+  if (existsSync(destSafe)) {
+    throw new FsOpError('Ya existe un ítem con ese nombre.', 'exists')
+  }
+
+  try {
+    renameSync(srcAbs, destSafe)
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code
+    if (code !== 'EXDEV') {
+      throw e instanceof FsOpError
+        ? e
+        : new FsOpError(e instanceof Error ? e.message : 'No se pudo mover.', 'invalid')
+    }
+    // Cross-device: copy async first; only then remove source (no data loss on copy failure).
+    await copyTree(srcAbs, destSafe)
+    await fsp.rm(srcAbs, { recursive: true, force: true })
+  }
+}
+
 /** Recursively delete a file or folder. Never deletes the share root. */
 export function removeInShare(root: string, relPath: string): void {
   const rel = posixRel(relPath)
@@ -157,6 +264,13 @@ export function mkdirLocal(root: string | null, req: FsMkdirRequest): FsOpResult
 
 export function renameLocal(root: string | null, req: FsRenameRequest): FsOpResult {
   return wrap(() => renameInShare(requireRoot(root), req.path, req.newName))
+}
+
+export async function moveLocal(
+  root: string | null,
+  req: FsMoveRequest
+): Promise<FsOpResult> {
+  return wrapAsync(() => moveInShare(requireRoot(root), req.path, req.destPath || ''))
 }
 
 export function removeLocal(root: string | null, req: FsRemoveRequest): FsOpResult {

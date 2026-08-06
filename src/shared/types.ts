@@ -161,6 +161,14 @@ export interface FsRenameRequest {
   newName: string
 }
 
+/** Move a share entry into another relative folder (keeps basename). */
+export interface FsMoveRequest {
+  /** Relative path of the file or folder to move. */
+  path: string
+  /** Relative destination parent folder (empty = share root). */
+  destPath?: string
+}
+
 export interface FsRemoveRequest {
   /** Relative path of the file or folder to delete. */
   path: string
@@ -172,6 +180,11 @@ export interface RemoteFsMkdirRequest extends FsMkdirRequest {
 }
 
 export interface RemoteFsRenameRequest extends FsRenameRequest {
+  baseUrl: string
+  token?: string
+}
+
+export interface RemoteFsMoveRequest extends FsMoveRequest {
   baseUrl: string
   token?: string
 }
@@ -312,9 +325,11 @@ export interface AntishareApi {
   exportItems: (req: ExportItemsRequest) => Promise<ExportItemsResult>
   mkdirLocal: (req: FsMkdirRequest) => Promise<FsOpResult>
   renameLocal: (req: FsRenameRequest) => Promise<FsOpResult>
+  moveLocal: (req: FsMoveRequest) => Promise<FsOpResult>
   removeLocal: (req: FsRemoveRequest) => Promise<FsOpResult>
   remoteMkdir: (req: RemoteFsMkdirRequest) => Promise<FsOpResult>
   remoteRename: (req: RemoteFsRenameRequest) => Promise<FsOpResult>
+  remoteMove: (req: RemoteFsMoveRequest) => Promise<FsOpResult>
   remoteRemove: (req: RemoteFsRemoveRequest) => Promise<FsOpResult>
   showItemInFolder: (filePath: string) => Promise<{ ok: boolean; error?: string }>
 }

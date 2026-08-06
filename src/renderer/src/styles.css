@@ -148,8 +148,7 @@
 }
 
 .finder-toolbar {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
   gap: var(--space-3);
   flex-shrink: 0;
@@ -191,12 +190,71 @@
   border-right: 1px solid var(--as-gray-200);
 }
 
+.finder-toolbar-view-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.finder-toolbar-ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: var(--space-2);
+  border-right: 1px solid var(--as-gray-200);
+}
+
 .finder-toolbar-end {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   padding-left: var(--space-3);
   border-left: 1px solid var(--as-gray-200);
+}
+
+.finder-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-top: 1px solid var(--as-gray-200);
+  background: color-mix(in srgb, var(--as-gray-50) 70%, transparent);
+  backdrop-filter: saturate(200%) blur(24px);
+  -webkit-backdrop-filter: saturate(200%) blur(24px);
+}
+
+.finder-statusbar .finder-crumbs {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.finder-statusbar .finder-crumb {
+  padding: 1px 5px;
+  gap: 5px;
+}
+
+.finder-statusbar .finder-crumb-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 14px;
+}
+
+.finder-statusbar .finder-crumb-icon svg {
+  width: 16px;
+  height: 13px;
+  display: block;
+}
+
+.finder-statusbar .finder-share-state {
+  flex-shrink: 0;
 }
 
 .finder-share-state {
@@ -277,6 +335,9 @@
 }
 
 .finder-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   background: transparent;
   color: var(--color-text-muted);
@@ -293,6 +354,9 @@
 }
 
 .finder-crumb.current {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--color-text);
   font-weight: var(--weight-semibold);
 }

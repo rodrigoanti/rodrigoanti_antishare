@@ -26,7 +26,8 @@ import {
   httpStatusForFsError,
   mkdirInShare,
   removeInShare,
-  renameInShare
+  renameInShare,
+  moveInShare
 } from './fsOps'
 
 export { resolveSafe } from './pathSafe'
@@ -401,6 +402,18 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
         try {
           const body = await readJsonBody(req)
           renameInShare(root, strField(body, 'path'), strField(body, 'newName'))
+          sendJson(res, 200, { ok: true })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (!res.headersSent) sendJson(res, httpStatusForFsError(e), { error: msg })
+        }
+        return
+      }
+
+      if (method === 'POST' && pathname === '/api/move') {
+        try {
+          const body = await readJsonBody(req)
+          await moveInShare(root, strField(body, 'path'), strField(body, 'destPath'))
           sendJson(res, 200, { ok: true })
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)

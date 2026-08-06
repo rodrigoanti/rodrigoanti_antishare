@@ -25,9 +25,11 @@ import {
   type PrepareDragResult,
   type FsMkdirRequest,
   type FsRenameRequest,
+  type FsMoveRequest,
   type FsRemoveRequest,
   type RemoteFsMkdirRequest,
   type RemoteFsRenameRequest,
+  type RemoteFsMoveRequest,
   type RemoteFsRemoveRequest
 } from '../shared/types'
 import { listShareFolder, startShareServer, type ShareServerHandle } from './shareServer'
@@ -36,11 +38,12 @@ import {
   remoteDownload,
   remoteList,
   remoteMkdir,
+  remoteMove,
   remoteRemove,
   remoteRename,
   remoteUpload
 } from './remote'
-import { mkdirLocal, removeLocal, renameLocal } from './fsOps'
+import { mkdirLocal, moveLocal, removeLocal, renameLocal } from './fsOps'
 import { importLocalPaths, importRemotePaths } from './importFiles'
 import { exportItemsToFolder } from './exportItems'
 import { loadSettings, saveSettings } from './settings'
@@ -280,11 +283,15 @@ export function registerIpc(): void {
   ipcMain.handle('files:rename', async (_e, req: FsRenameRequest) =>
     renameLocal(resolveLocalRoot(), req)
   )
+  ipcMain.handle('files:move', async (_e, req: FsMoveRequest) =>
+    moveLocal(resolveLocalRoot(), req)
+  )
   ipcMain.handle('files:remove', async (_e, req: FsRemoveRequest) =>
     removeLocal(resolveLocalRoot(), req)
   )
   ipcMain.handle('remote:mkdir', async (_e, req: RemoteFsMkdirRequest) => remoteMkdir(req))
   ipcMain.handle('remote:rename', async (_e, req: RemoteFsRenameRequest) => remoteRename(req))
+  ipcMain.handle('remote:move', async (_e, req: RemoteFsMoveRequest) => remoteMove(req))
   ipcMain.handle('remote:remove', async (_e, req: RemoteFsRemoveRequest) => remoteRemove(req))
 
   ipcMain.handle('shell:showItemInFolder', async (_e, filePath: string) => {

@@ -6,7 +6,7 @@
  * Local tree copy is async (fs.promises + setImmediate yields) so the Electron main
  * process event loop stays responsive during large imports.
  */
-import { existsSync, lstatSync, promises as fsp, readdirSync, realpathSync, statSync } from 'fs'
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from 'fs'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'path'
 import type {
   ImportLocalRequest,
@@ -15,11 +15,9 @@ import type {
   RemoteImportResult,
   RemoteUploadResult
 } from '../shared/types'
+import { copyTree } from './fsCopy'
 import { peerHttp, remoteUpload } from './remote'
 import { resolveSafe } from './shareServer'
-
-/** Yield to the main event loop every N file copies so IPC/UI stay responsive. */
-const COPY_YIELD_EVERY = 8
 
 function posixJoin(parent: string, name: string): string {
   const p = String(parent || '')
@@ -58,46 +56,6 @@ function uniqueNameInDir(dir: string, name: string): string {
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
-}
-
-async function copyTree(
-  src: string,
-  dest: string,
-  progress: { files: number } = { files: 0 }
-): Promise<void> {
-  const st = await fsp.lstat(src)
-  if (st.isSymbolicLink()) return
-  if (st.isDirectory()) {
-    let srcReal = src
-    try {
-      srcReal = await fsp.realpath(src)
-    } catch {
-      srcReal = normalize(src)
-    }
-    let destNorm = normalize(dest)
-    try {
-      await fsp.access(dest)
-      destNorm = await fsp.realpath(dest)
-    } catch {
-      destNorm = normalize(dest)
-    }
-    if (isInside(srcReal, destNorm)) {
-      throw new Error('No se puede copiar una carpeta dentro de sí misma.')
-    }
-    await fsp.mkdir(dest, { recursive: true })
-    const names = await fsp.readdir(src)
-    for (const name of names) {
-      await copyTree(join(src, name), join(dest, name), progress)
-    }
-    return
-  }
-  if (st.isFile()) {
-    await fsp.copyFile(src, dest)
-    progress.files += 1
-    if (progress.files % COPY_YIELD_EVERY === 0) {
-      await yieldToEventLoop()
-    }
-  }
 }
 
 function validateSource(source: string): { ok: true; abs: string } | { ok: false; error: string } {

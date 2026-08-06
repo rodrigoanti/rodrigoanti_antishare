@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AntishareApi,
   FsMkdirRequest,
+  FsMoveRequest,
   FsRemoveRequest,
   FsRenameRequest,
   ImportLocalRequest,
@@ -12,6 +13,7 @@ import type {
   ExportItemsRequest,
   RemoteDownloadRequest,
   RemoteFsMkdirRequest,
+  RemoteFsMoveRequest,
   RemoteFsRemoveRequest,
   RemoteFsRenameRequest,
   RemoteImportRequest,
@@ -50,9 +52,11 @@ const api: AntishareApi = {
   exportItems: (req: ExportItemsRequest) => ipcRenderer.invoke('files:exportItems', req),
   mkdirLocal: (req: FsMkdirRequest) => ipcRenderer.invoke('files:mkdir', req),
   renameLocal: (req: FsRenameRequest) => ipcRenderer.invoke('files:rename', req),
+  moveLocal: (req: FsMoveRequest) => ipcRenderer.invoke('files:move', req),
   removeLocal: (req: FsRemoveRequest) => ipcRenderer.invoke('files:remove', req),
   remoteMkdir: (req: RemoteFsMkdirRequest) => ipcRenderer.invoke('remote:mkdir', req),
   remoteRename: (req: RemoteFsRenameRequest) => ipcRenderer.invoke('remote:rename', req),
+  remoteMove: (req: RemoteFsMoveRequest) => ipcRenderer.invoke('remote:move', req),
   remoteRemove: (req: RemoteFsRemoveRequest) => ipcRenderer.invoke('remote:remove', req),
   showItemInFolder: (filePath: string) => ipcRenderer.invoke('shell:showItemInFolder', filePath)
 }

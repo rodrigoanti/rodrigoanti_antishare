@@ -17,6 +17,7 @@ import {
   type FsOpResult,
   type RemoteFsMkdirRequest,
   type RemoteFsRenameRequest,
+  type RemoteFsMoveRequest,
   type RemoteFsRemoveRequest
 } from '../shared/types'
 import {
@@ -398,7 +399,7 @@ export async function remoteUpload(req: RemoteUploadRequest): Promise<RemoteUplo
 async function remoteFsPost(
   baseUrl: string,
   token: string | undefined,
-  endpoint: '/api/mkdir' | '/api/rename' | '/api/remove',
+  endpoint: '/api/mkdir' | '/api/rename' | '/api/move' | '/api/remove',
   body: Record<string, string>
 ): Promise<FsOpResult> {
   try {
@@ -435,6 +436,13 @@ export async function remoteRename(req: RemoteFsRenameRequest): Promise<FsOpResu
   return remoteFsPost(req.baseUrl, req.token, '/api/rename', {
     path: req.path,
     newName: req.newName
+  })
+}
+
+export async function remoteMove(req: RemoteFsMoveRequest): Promise<FsOpResult> {
+  return remoteFsPost(req.baseUrl, req.token, '/api/move', {
+    path: req.path,
+    destPath: req.destPath || ''
   })
 }
 

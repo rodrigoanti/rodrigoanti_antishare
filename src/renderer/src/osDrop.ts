@@ -1,14 +1,19 @@
 export const ANTISHARE_INTERNAL_DRAG = 'application/x-antishare-internal'
 
-/** Session flag: native startDrag strips custom MIME, so track AntiShare→self drops. */
+/** Session flag: track AntiShare→self drops (HTML5 internal drag). */
 let internalOsDragDepth = 0
 /** Share-relative parent of the item being dragged ('' = share root). */
 let internalDragSourceParent: string | null = null
+/** Share-relative path of the item being dragged. */
+let internalDragSourcePath: string | null = null
 
-export function beginInternalFileDrag(sourceParent?: string): void {
+export function beginInternalFileDrag(sourceParent?: string, sourcePath?: string): void {
   internalOsDragDepth += 1
   if (sourceParent !== undefined) {
     internalDragSourceParent = sourceParent
+  }
+  if (sourcePath !== undefined) {
+    internalDragSourcePath = sourcePath
   }
 }
 
@@ -16,6 +21,7 @@ export function endInternalFileDrag(): void {
   internalOsDragDepth = Math.max(0, internalOsDragDepth - 1)
   if (internalOsDragDepth === 0) {
     internalDragSourceParent = null
+    internalDragSourcePath = null
   }
 }
 
@@ -28,8 +34,26 @@ export function getInternalDragSourceParent(): string | null {
   return internalOsDragDepth > 0 ? internalDragSourceParent : null
 }
 
+/** Share-relative path of the item being dragged, or null. */
+export function getInternalDragSourcePath(): string | null {
+  return internalOsDragDepth > 0 ? internalDragSourcePath : null
+}
+
+/** True if `child` is the same as `parent` or nested under it (share-relative posix). */
+export function isSharePathInsideOrEqual(parent: string, child: string): boolean {
+  const p = String(parent || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+  const c = String(child || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+  if (p === c) return true
+  if (!p) return true
+  return c.startsWith(`${p}/`)
+}
+
 export function markInternalDrag(dt: DataTransfer): void {
-  dt.effectAllowed = 'copy'
+  dt.effectAllowed = 'copyMove'
   dt.setData(ANTISHARE_INTERNAL_DRAG, '1')
 }
 

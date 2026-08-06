@@ -16,6 +16,8 @@ export interface FolderItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   sizeLabel?: string
   /** Visual cue while preparing remote drag */
   dragPreparing?: boolean
+  /** Highlight when this folder is a valid drop target */
+  dropActive?: boolean
   renaming?: boolean
   renameValue?: string
   onRenameChange?: (value: string) => void
@@ -33,6 +35,7 @@ export function FolderItem({
   meta,
   sizeLabel,
   dragPreparing = false,
+  dropActive = false,
   draggable,
   onDragStart,
   renaming = false,
@@ -102,7 +105,8 @@ export function FolderItem({
           styles.row,
           selected && styles.selected,
           canDrag && styles.draggable,
-          dragPreparing && styles.dragPreparing
+          dragPreparing && styles.dragPreparing,
+          dropActive && styles.dropActive
         )}
         aria-pressed={selected}
         draggable={canDrag}
@@ -138,7 +142,8 @@ export function FolderItem({
         styles.iconItem,
         selected && styles.selected,
         canDrag && styles.draggable,
-        dragPreparing && styles.dragPreparing
+        dragPreparing && styles.dragPreparing,
+        dropActive && styles.dropActive
       )}
       aria-pressed={selected}
       draggable={canDrag}

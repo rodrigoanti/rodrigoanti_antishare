@@ -44,6 +44,13 @@
   background: color-mix(in srgb, var(--as-blue-selected) 80%, var(--as-blue));
 }
 
+.iconItem.dropActive,
+.row.dropActive {
+  background: var(--as-blue-soft, color-mix(in srgb, var(--as-blue) 18%, transparent));
+  outline: 2px solid var(--as-blue);
+  outline-offset: -2px;
+}
+
 .iconArt {
   position: relative;
   display: grid;
