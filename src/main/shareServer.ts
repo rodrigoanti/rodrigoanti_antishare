@@ -439,7 +439,7 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
       if (err.code === 'EADDRINUSE') {
         reject(
           new Error(
-            `El puerto ${opts.port} ya está en uso. Cerrá la otra instancia de AntiShare (u otra app) que lo esté usando e intentá de nuevo.`
+            `El puerto ${opts.port} ya está en uso. Cierra la otra instancia de AntiShare (u otra app) que lo esté usando e intenta de nuevo.`
           )
         )
         return

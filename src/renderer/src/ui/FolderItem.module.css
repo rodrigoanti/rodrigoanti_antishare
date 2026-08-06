@@ -92,7 +92,6 @@
   appearance: none;
   width: 100%;
   border: none;
-  border-bottom: 1px solid var(--as-gray-200);
   background: transparent;
   display: grid;
   grid-template-columns: 36px minmax(0, 1.6fr) 110px minmax(0, 1fr) 72px;
@@ -105,10 +104,6 @@
   color: var(--color-text);
   transition: background var(--transition-fast);
   border-radius: 0;
-}
-
-.row:last-child {
-  border-bottom: none;
 }
 
 .row:hover {

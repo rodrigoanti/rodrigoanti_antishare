@@ -137,7 +137,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   const [opBusy, setOpBusy] = useState(false)
   const hasLoadedOnce = useRef(false)
   const silentFailStreak = useRef(0)
-  /** True while listing fails — poll every 2s until a success, then back to 5s. */
+  /** True while listing fails — used for unstable-connection UX; poll stays at 2s. */
   const connectionUnstable = useRef(false)
   const tokenInputRef = useRef<HTMLInputElement>(null)
   /** Remote drag: absolute path from prepareDrag, keyed by entry.path */
@@ -285,7 +285,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           peerTokenCache.current.delete(nav.peer.baseUrl)
           setPendingPeer(nav.peer)
           setTokenDraft('')
-          setTokenError('La clave guardada ya no es válida. Ingresala de nuevo.')
+          setTokenError('La clave guardada ya no es válida. Ingrésala de nuevo.')
         }
         if (!silent) {
           silentFailStreak.current = 0
@@ -353,7 +353,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
       if (cancelled) return
       await loadContents({ silent })
       if (cancelled) return
-      const delay = connectionUnstable.current ? 2_000 : 5_000
+      const delay = 2_000
       timer = window.setTimeout(() => void run(true), delay)
     }
 
@@ -483,7 +483,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     if (!pendingPeer) return
     const value = tokenDraft.trim()
     if (!value) {
-      setTokenError('Ingresá la clave para continuar.')
+      setTokenError('Ingresa la clave para continuar.')
       return
     }
     const peer = pendingPeer
@@ -899,7 +899,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     if (!isOsFileDrag(e.dataTransfer) || shareStarting) return
     const folder = osDropSingleDirectoryPath(e.dataTransfer)
     if (!folder) {
-      toast.error('Soltá una sola carpeta.')
+      toast.error('Suelta una sola carpeta.')
       return
     }
     void startShareFromFolder(folder)
@@ -931,7 +931,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           </span>
           <h2 className="finder-empty-title">Esta carpeta está vacía</h2>
           <p className="finder-empty-sub">
-            Arrastrá archivos acá o creá una carpeta nueva para empezar.
+            Arrastra archivos aquí o crea una carpeta nueva para empezar.
           </p>
           <Button
             variant="primary"
@@ -969,12 +969,12 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
             </svg>
           </span>
           <h2 className="finder-empty-title">
-            {localOnline ? 'Elegí una carpeta' : 'Compartí una carpeta'}
+            {localOnline ? 'Elige una carpeta' : 'Comparte una carpeta'}
           </h2>
           <p className="finder-empty-sub">
             {localOnline
-              ? 'Abrí Mi carpeta o un peer desde la barra lateral para explorar archivos.'
-              : 'Elegí o arrastrá una carpeta para empezar a compartir en la red local.'}
+              ? 'Abre Mi carpeta o un peer desde la barra lateral para explorar archivos.'
+              : 'Elige o arrastra una carpeta para empezar a compartir en la red local.'}
           </p>
           {localOnline ? (
             <Button variant="primary" size="sm" onClick={selectLocalShare}>
@@ -1174,7 +1174,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
             )
           })}
           {peers.length === 0 ? (
-            <p className="finder-side-hint">Los peers de la red aparecen acá.</p>
+            <p className="finder-side-hint">Los peers de la red aparecen aquí.</p>
           ) : null}
         </aside>
 

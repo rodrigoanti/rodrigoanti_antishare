@@ -19,7 +19,7 @@ interface ShareStatusContextValue {
 
 const ShareStatusContext = createContext<ShareStatusContextValue | null>(null)
 
-const POLL_MS = 3000
+const POLL_MS = 2000
 
 export function ShareStatusProvider({ children }: { children: ReactNode }): ReactElement {
   const [status, setStatus] = useState<ShareStatus | null>(null)

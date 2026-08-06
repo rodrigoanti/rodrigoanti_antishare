@@ -209,7 +209,7 @@ function wait(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  assert(PEER_STALE_MS === TTL, `PEER_STALE_MS cambió a ${PEER_STALE_MS}; ajustá la prueba`)
+  assert(PEER_STALE_MS === TTL, `PEER_STALE_MS cambió a ${PEER_STALE_MS}; ajusta la prueba`)
   testDisconnect()
   testIpChange()
   testRestart()

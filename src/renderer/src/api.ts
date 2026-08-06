@@ -1,7 +1,7 @@
 import type { AntishareApi, ShareSettings } from '../../shared/types'
 
 const stubError = (action: string): string =>
-  `IPC no disponible (${action}). Esperá a que el Backend exponga window.antishare.`
+  `IPC no disponible (${action}). Espera a que el Backend exponga window.antishare.`
 
 const emptySettings = (): ShareSettings => ({
   folder: null,
@@ -105,14 +105,14 @@ export function mapIpcError(raw: string | undefined, fallback: string): string {
   if (!raw) return fallback
   const lower = raw.toLowerCase()
   if (lower.includes('401') || lower.includes('unauthorized')) {
-    return 'Token inválido o requerido. Revisá el token e intentá de nuevo.'
+    return 'Token inválido o requerido. Revisa el token e intenta de nuevo.'
   }
   if (
     lower.includes('token') &&
     !isNetworkReachabilityError(raw) &&
     !isClearBackendMessage(raw)
   ) {
-    return 'Token inválido o requerido. Revisá el token e intentá de nuevo.'
+    return 'Token inválido o requerido. Revisa el token e intenta de nuevo.'
   }
   if (lower.includes('403') || lower.includes('permission') || lower.includes('eacces')) {
     return 'Sin permiso para acceder a este recurso.'

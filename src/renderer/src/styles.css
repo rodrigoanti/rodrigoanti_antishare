@@ -388,14 +388,15 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--as-gray-200);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: var(--color-surface);
+  background: transparent;
 }
 
 .finder-list > li {
   margin: 0;
+}
+
+.finder-list > li:not(:last-child) {
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .finder-list-head {
@@ -409,7 +410,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--color-text-muted);
-  border-bottom: 1px solid var(--as-gray-200);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .finder-empty {

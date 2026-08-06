@@ -309,7 +309,7 @@ export function PeerReachabilityAlert({
       </details>
 
       <details className="conn-fold">
-        <summary>Qué podés revisar</summary>
+        <summary>Qué puedes revisar</summary>
         <div className="conn-fold-body">
           <ol className="conn-tips">
             <li>Que en la otra PC el share esté iniciado.</li>

@@ -67,7 +67,7 @@ function bindErrorMessage(err: unknown): string {
     msg.toLowerCase().includes('ya está en uso') ||
     (err as NodeJS.ErrnoException)?.code === 'EADDRINUSE'
   ) {
-    return `El puerto ${DEFAULT_SHARE_PORT} ya está en uso. Cerrá la otra instancia de AntiShare (u otra app) que lo esté usando e intentá de nuevo.`
+    return `El puerto ${DEFAULT_SHARE_PORT} ya está en uso. Cierra la otra instancia de AntiShare (u otra app) que lo esté usando e intenta de nuevo.`
   }
   return msg
 }

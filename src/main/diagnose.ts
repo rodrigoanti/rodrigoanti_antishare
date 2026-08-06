@@ -80,10 +80,10 @@ function buildSummary(checks: NetworkCheck[]): string {
   const fails = checks.filter((c) => !c.ok && c.severity !== 'info')
   const warns = checks.filter((c) => !c.ok && c.severity === 'warn')
   if (fails.some((c) => c.id === 'shareRunning')) {
-    return 'El servidor no está compartiendo. Iniciá el share para diagnosticar la LAN.'
+    return 'El servidor no está compartiendo. Inicia el share para diagnosticar la LAN.'
   }
   if (fails.some((c) => c.id === 'lanIp')) {
-    return 'No hay IP LAN. Conectate a Wi‑Fi o Ethernet e intentá de nuevo.'
+    return 'No hay IP LAN. Conéctate a Wi‑Fi o Ethernet e intenta de nuevo.'
   }
   if (fails.some((c) => c.id === 'httpLocal')) {
     return 'HTTP en localhost falló. El share no responde en 127.0.0.1:8765.'
@@ -96,20 +96,20 @@ function buildSummary(checks: NetworkCheck[]): string {
     return 'HTTP local OK pero LAN falla → probable bloqueo del Firewall (macOS/Windows) para AntiShare.'
   }
   if (fails.some((c) => c.id === 'udpDiscovery')) {
-    return 'UDP discovery no escucha en 8766. Revisá permisos de red o reiniciá la app.'
+    return 'UDP discovery no escucha en 8766. Revisa permisos de red o reinicia la app.'
   }
   if (fails.some((c) => c.id.startsWith('peersHttp'))) {
-    return 'Hay peers visibles por UDP 8766 pero HTTP/TCP 8765 falla. Revisá firewall inbound, red de invitados y permiso Red local en macOS.'
+    return 'Hay peers visibles por UDP 8766 pero HTTP/TCP 8765 falla. Revisa firewall inbound, red de invitados y permiso Red local en macOS.'
   }
   if (fails.length === 0 && warns.length === 0) {
     const peers = checks.find((c) => c.id === 'peersSeen')
     if (peers && !peers.ok) {
-      return 'Red local OK. Todavía no se ven peers: iniciá AntiShare en otra máquina o esperá unos segundos.'
+      return 'Red local OK. Todavía no se ven peers: inicia AntiShare en otra máquina o espera unos segundos.'
     }
     return 'Diagnóstico OK: share, LAN e discovery parecen listos.'
   }
   if (fails.length > 0) {
-    return `Hay ${fails.length} problema(s) que bloquean la red. Revisá los checks en rojo.`
+    return `Hay ${fails.length} problema(s) que bloquean la red. Revisa los checks en rojo.`
   }
   return 'Hay advertencias; la app puede funcionar con limitaciones.'
 }
@@ -149,7 +149,7 @@ export async function runNetworkDiagnose(opts: {
           false,
           'error',
           'El servidor no está compartiendo.',
-          'Abrí Configurar e iniciá el share con una carpeta.'
+          'Abre Configurar e inicia el share con una carpeta.'
         )
   )
 
@@ -162,7 +162,7 @@ export async function runNetworkDiagnose(opts: {
         false,
         'error',
         'No hay IP LAN (Wi‑Fi/Ethernet).',
-        'Conectate a una red local. Sin IP no vas a aparecer ante otros peers.'
+        'Conéctate a una red local. Sin IP no aparecerás ante otros peers.'
       )
     )
   } else {
@@ -175,7 +175,7 @@ export async function runNetworkDiagnose(opts: {
         `IP LAN detectada: ${lanIps.join(', ')}.`,
         running && lanUrls.length > 0
           ? `Share alcanzable en: ${lanUrls.join(', ')}.`
-          : 'Usá esta IP desde otra máquina en la misma red.'
+          : 'Usa esta IP desde otra máquina en la misma red.'
       )
     )
   }
@@ -188,7 +188,7 @@ export async function runNetworkDiagnose(opts: {
         false,
         'warn',
         `TCP ${DEFAULT_SHARE_PORT} no está escuchando (share detenido).`,
-        'Iniciá el share para abrir el puerto.'
+        'Inicia el share para abrir el puerto.'
       )
     )
   } else {
@@ -206,7 +206,7 @@ export async function runNetworkDiagnose(opts: {
             false,
             'error',
             `No se pudo conectar a 127.0.0.1:${DEFAULT_SHARE_PORT}.`,
-            'Reiniciá el share o revisá si otra app ocupa el puerto.'
+            'Reinicia el share o revisa si otra app ocupa el puerto.'
           )
     )
   }
@@ -293,7 +293,7 @@ export async function runNetworkDiagnose(opts: {
         false,
         'warn',
         `UDP discovery iniciado pero el socket aún no está bound en ${DISCOVERY_PORT}.`,
-        'Esperá un segundo y volvé a diagnosticar.'
+        'Espera un segundo y vuelve a diagnosticar.'
       )
     )
   } else {
@@ -303,7 +303,7 @@ export async function runNetworkDiagnose(opts: {
         false,
         'error',
         'UDP discovery no escucha.',
-        'Reiniciá la app. Si persiste, probable bloqueo de red/firewall para UDP 8766.'
+        'Reinicia la app. Si persiste, probable bloqueo de red/firewall para UDP 8766.'
       )
     )
   }
@@ -326,7 +326,7 @@ export async function runNetworkDiagnose(opts: {
         false,
         'info',
         'Todavía no se detectaron peers en la LAN.',
-        'Informativo: iniciá AntiShare en otra máquina de la misma red y esperá unos segundos.'
+        'Informativo: inicia AntiShare en otra máquina de la misma red y espera unos segundos.'
       )
     )
   }

@@ -78,7 +78,7 @@ export function NetworkStatus(): ReactElement {
 
       {!result && !error && !busy && (
         <p className="network-status-idle muted">
-          Comprobá si el share, la IP LAN, HTTP y el descubrimiento UDP están listos.
+          Comprueba si el share, la IP LAN, HTTP y el descubrimiento UDP están listos.
         </p>
       )}
     </section>

@@ -93,7 +93,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
   async function onStart(): Promise<void> {
     setBusy(true)
     if (!folder.trim()) {
-      toast.error('Elegí una carpeta para compartir.')
+      toast.error('Elige una carpeta para compartir.')
       setBusy(false)
       return
     }
@@ -225,7 +225,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
           {missingLan && (
             <Alert variant="warning" title="Sin IP de red">
               Otras PCs no van a poder entrar: no hay una dirección LAN usable (solo localhost).
-              Revisá Wi‑Fi o Ethernet, el permiso de Red local en macOS, y que el diagnóstico de
+              Revisa Wi‑Fi o Ethernet, el permiso de Red local en macOS, y que el diagnóstico de
               red vea una IP LAN.
             </Alert>
           )}
@@ -236,7 +236,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
                 En la red — para otras PCs
               </h3>
               <p className="url-group-hint">
-                Compartí esta dirección con la otra máquina. 127.0.0.1 no sirve fuera de esta PC.
+                Comparte esta dirección con la otra máquina. 127.0.0.1 no sirve fuera de esta PC.
               </p>
               <ul className="url-list" aria-labelledby="lan-urls-title">
                 {lanUrls.map((url) => (
@@ -257,7 +257,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
                 Solo esta máquina
               </h3>
               <p className="url-group-hint">
-                Localhost y 127.0.0.1 solo abren acá. Otras PCs no pueden usarlas.
+                Localhost y 127.0.0.1 solo abren aquí. Otras PCs no pueden usarlas.
               </p>
               <ul className="url-list" aria-labelledby="local-urls-title">
                 {localUrls.map((url) => (
