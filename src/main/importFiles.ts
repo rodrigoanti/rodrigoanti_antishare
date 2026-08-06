@@ -2,16 +2,11 @@
  * Import OS-dropped files/folders into the local share or a remote peer.
  * Local copies stay on disk (recursive); remote walks the tree and uploads each file,
  * creating empty directories via /api/upload?path=… (mkdir recursive, no file part).
+ *
+ * Local tree copy is async (fs.promises + setImmediate yields) so the Electron main
+ * process event loop stays responsive during large imports.
  */
-import {
-  copyFileSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  statSync
-} from 'fs'
+import { existsSync, lstatSync, promises as fsp, readdirSync, realpathSync, statSync } from 'fs'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'path'
 import type {
   ImportLocalRequest,
@@ -22,6 +17,9 @@ import type {
 } from '../shared/types'
 import { peerHttp, remoteUpload } from './remote'
 import { resolveSafe } from './shareServer'
+
+/** Yield to the main event loop every N file copies so IPC/UI stay responsive. */
+const COPY_YIELD_EVERY = 8
 
 function posixJoin(parent: string, name: string): string {
   const p = String(parent || '')
@@ -58,32 +56,48 @@ function uniqueNameInDir(dir: string, name: string): string {
   return `${stem} (${n})${ext}`
 }
 
-function copyTree(src: string, dest: string): void {
-  const st = lstatSync(src)
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+async function copyTree(
+  src: string,
+  dest: string,
+  progress: { files: number } = { files: 0 }
+): Promise<void> {
+  const st = await fsp.lstat(src)
   if (st.isSymbolicLink()) return
   if (st.isDirectory()) {
     let srcReal = src
     try {
-      srcReal = realpathSync(src)
+      srcReal = await fsp.realpath(src)
     } catch {
       srcReal = normalize(src)
     }
     let destNorm = normalize(dest)
     try {
-      if (existsSync(dest)) destNorm = realpathSync(dest)
+      await fsp.access(dest)
+      destNorm = await fsp.realpath(dest)
     } catch {
       destNorm = normalize(dest)
     }
     if (isInside(srcReal, destNorm)) {
       throw new Error('No se puede copiar una carpeta dentro de sí misma.')
     }
-    mkdirSync(dest, { recursive: true })
-    for (const name of readdirSync(src)) {
-      copyTree(join(src, name), join(dest, name))
+    await fsp.mkdir(dest, { recursive: true })
+    const names = await fsp.readdir(src)
+    for (const name of names) {
+      await copyTree(join(src, name), join(dest, name), progress)
     }
     return
   }
-  if (st.isFile()) copyFileSync(src, dest)
+  if (st.isFile()) {
+    await fsp.copyFile(src, dest)
+    progress.files += 1
+    if (progress.files % COPY_YIELD_EVERY === 0) {
+      await yieldToEventLoop()
+    }
+  }
 }
 
 function validateSource(source: string): { ok: true; abs: string } | { ok: false; error: string } {
@@ -119,6 +133,12 @@ function rejectSelfCopy(
   }
   const destLogical = join(destDirReal, basename(destAbs))
   const st = lstatSync(srcAbs)
+  if (st.isFile()) {
+    if (dirname(srcReal) === destDirReal) {
+      return 'Ese archivo ya está en este destino.'
+    }
+    return null
+  }
   if (!st.isDirectory()) return null
   if (isInside(srcReal, destLogical)) {
     return 'No se puede copiar una carpeta dentro de sí misma.'
@@ -133,10 +153,10 @@ function rejectSelfCopy(
 }
 
 /** Copy absolute OS paths into the local share at destPath (relative). */
-export function importLocalPaths(
+export async function importLocalPaths(
   shareRoot: string | null,
   req: ImportLocalRequest
-): ImportLocalResult {
+): Promise<ImportLocalResult> {
   if (!shareRoot) {
     return { ok: false, imported: 0, error: 'No hay carpeta compartida configurada.' }
   }
@@ -178,8 +198,10 @@ export function importLocalPaths(
     if (blocked) return { ok: false, imported, error: blocked }
 
     try {
-      copyTree(checked.abs, destAbs)
+      await copyTree(checked.abs, destAbs)
       imported++
+      // Yield between top-level sources so concurrent IPC can run.
+      await yieldToEventLoop()
     } catch (e) {
       return {
         ok: false,
@@ -189,6 +211,58 @@ export function importLocalPaths(
     }
   }
   return { ok: true, imported }
+}
+
+/** Copy absolute paths into an arbitrary absolute directory (e.g. user-chosen export folder). */
+export async function copyPathsToDirectory(
+  sources: string[],
+  destDir: string
+): Promise<{ ok: boolean; copied: number; destPaths: string[]; error?: string }> {
+  if (typeof destDir !== 'string' || !destDir.trim() || !isAbsolute(destDir)) {
+    return { ok: false, copied: 0, destPaths: [], error: 'La carpeta destino debe ser una ruta absoluta.' }
+  }
+  if (!existsSync(destDir)) {
+    return { ok: false, copied: 0, destPaths: [], error: 'La carpeta destino no existe.' }
+  }
+  let destReal: string
+  try {
+    if (!statSync(destDir).isDirectory()) {
+      return { ok: false, copied: 0, destPaths: [], error: 'El destino no es una carpeta.' }
+    }
+    destReal = realpathSync(destDir)
+  } catch (e) {
+    return {
+      ok: false,
+      copied: 0,
+      destPaths: [],
+      error: e instanceof Error ? e.message : 'No se pudo leer la carpeta destino.'
+    }
+  }
+
+  const destPaths: string[] = []
+  let copied = 0
+  for (const source of sources) {
+    const checked = validateSource(source)
+    if (!checked.ok) return { ok: false, copied, destPaths, error: checked.error }
+
+    const name = uniqueNameInDir(destReal, basename(checked.abs))
+    const destAbs = join(destReal, name)
+
+    try {
+      await copyTree(checked.abs, destAbs)
+      destPaths.push(destAbs)
+      copied++
+      await yieldToEventLoop()
+    } catch (e) {
+      return {
+        ok: false,
+        copied,
+        destPaths,
+        error: e instanceof Error ? e.message : `No se pudo copiar ${checked.abs}.`
+      }
+    }
+  }
+  return { ok: true, copied, destPaths }
 }
 
 async function remoteEnsureDir(req: {

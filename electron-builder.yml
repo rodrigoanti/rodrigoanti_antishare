@@ -19,7 +19,6 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   target:
     - dir
-    - dmg
   artifactName: AntiShare-${version}-mac-${arch}.${ext}
   extendInfo:
     NSLocalNetworkUsageDescription: AntiShare descubre otros equipos en tu red local (Wi‑Fi o Ethernet) y comparte carpetas en la LAN. Sin este permiso, los peers no pueden verte ni abrir tu share.

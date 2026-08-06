@@ -252,13 +252,35 @@ export type PrepareDragRequest = StartDragRequest
 
 export interface PrepareDragResult {
   ok: boolean
-  /** Absolute file or folder path ready for startDragLocal / startDrag. */
+  /** Absolute file or folder path under the share or DRAG_DIR staging. */
   filePath?: string
   error?: string
 }
 
 export interface StartDragResult {
   ok: boolean
+  error?: string
+}
+
+/** One share entry to copy into a user-chosen OS folder (Save As / Export). */
+export interface ExportItemSpec {
+  kind: 'local' | 'remote'
+  path: string
+  isDir: boolean
+  baseUrl?: string
+  token?: string
+}
+
+export interface ExportItemsRequest {
+  /** Absolute destination directory chosen via native folder dialog. */
+  destDir: string
+  items: ExportItemSpec[]
+}
+
+export interface ExportItemsResult {
+  ok: boolean
+  exported: number
+  destPaths?: string[]
   error?: string
 }
 
@@ -273,15 +295,8 @@ export interface AntishareApi {
   getSettings: () => Promise<ShareSettings>
   setSettings: (partial: Partial<ShareSettings>) => Promise<ShareSettings>
   diagnoseNetwork: () => Promise<NetworkDiagnoseResult>
-  /** Combined prepare+drag (async — do not call from dragstart). */
-  startDrag: (req: StartDragRequest) => Promise<StartDragResult>
-  /** Resolve a local file/folder or materialize a remote one ahead of dragstart. */
+  /** Resolve a local file/folder or materialize a remote one (used by export / tooling). */
   prepareDrag: (req: PrepareDragRequest) => Promise<PrepareDragResult>
-  /**
-   * Synchronous startDrag (sendSync). Call directly from dragstart, not inside async.
-   * Absolute prepared path, or share-relative local path.
-   */
-  startDragLocal: (filePath: string, opts?: { isDir?: boolean }) => StartDragResult
   listPeers: () => Promise<Peer[]>
   onPeersUpdate: (cb: (peers: Peer[]) => void) => () => void
   addManualPeer: (req: PeerAddManualRequest) => Promise<PeerAddManualResult>
@@ -293,6 +308,8 @@ export interface AntishareApi {
   importLocal: (req: ImportLocalRequest) => Promise<ImportLocalResult>
   /** Upload dropped OS files/folders (trees) to a remote peer. */
   importRemote: (req: RemoteImportRequest) => Promise<RemoteImportResult>
+  /** Copy share item(s) into a user-chosen absolute folder (replaces OS drag-out). */
+  exportItems: (req: ExportItemsRequest) => Promise<ExportItemsResult>
   mkdirLocal: (req: FsMkdirRequest) => Promise<FsOpResult>
   renameLocal: (req: FsRenameRequest) => Promise<FsOpResult>
   removeLocal: (req: FsRemoveRequest) => Promise<FsOpResult>

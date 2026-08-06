@@ -1,4 +1,10 @@
-import { nativeImage, type IpcMainEvent, type IpcMainInvokeEvent, type NativeImage } from 'electron'
+import {
+  BrowserWindow,
+  nativeImage,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+  type NativeImage
+} from 'electron'
 import {
   existsSync,
   mkdirSync,
@@ -118,6 +124,17 @@ export interface ResolvedDragTarget {
   error?: string
 }
 
+function restoreFocusAfterDrag(sender: IpcMainEvent['sender'] | IpcMainInvokeEvent['sender']): void {
+  try {
+    if (sender.isDestroyed()) return
+    const win = BrowserWindow.fromWebContents(sender)
+    win?.focus()
+    sender.focus()
+  } catch {
+    /* ignore — focus restore is best-effort after native drag */
+  }
+}
+
 function beginDrag(
   event: Pick<IpcMainEvent | IpcMainInvokeEvent, 'sender'>,
   filePath: string,
@@ -135,8 +152,12 @@ function beginDrag(
       ...startDragPayload(filePath, kind),
       icon
     })
+    // startDrag blocks until the OS drag session ends (drop or cancel).
+    // Reclaim real OS/window input focus so clicks work after internal drops.
+    restoreFocusAfterDrag(event.sender)
     return { ok: true }
   } catch (e) {
+    restoreFocusAfterDrag(event.sender)
     return {
       ok: false,
       error: e instanceof Error ? e.message : 'No se pudo iniciar el arrastre'
@@ -311,9 +332,8 @@ async function prepareRemoteDrag(req: {
 }
 
 /**
- * Prepare a file or folder for OS drag (pointerdown / before dragstart).
- * Remote items land in DRAG_DIR; local items resolve under the share root without copying.
- * Frontend should call startDragLocal(filePath) from dragstart with the returned path.
+ * Resolve a local share path or materialize a remote item under DRAG_DIR.
+ * Used by export (Save As) and prepareDrag IPC — not for OS drag-out.
  */
 export async function handlePrepareDrag(
   req: PrepareDragRequest,

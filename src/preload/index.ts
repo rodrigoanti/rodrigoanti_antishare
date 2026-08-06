@@ -9,6 +9,7 @@ import type {
   PeerAddManualRequest,
   PeerRemoveManualRequest,
   PrepareDragRequest,
+  ExportItemsRequest,
   RemoteDownloadRequest,
   RemoteFsMkdirRequest,
   RemoteFsRemoveRequest,
@@ -18,8 +19,7 @@ import type {
   RemoteUploadRequest,
   ShareListLocalRequest,
   ShareSettings,
-  ShareStartRequest,
-  StartDragRequest
+  ShareStartRequest
 } from '../shared/types'
 
 const api: AntishareApi = {
@@ -32,10 +32,7 @@ const api: AntishareApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (partial: Partial<ShareSettings>) => ipcRenderer.invoke('settings:set', partial),
   diagnoseNetwork: () => ipcRenderer.invoke('network:diagnose'),
-  startDrag: (req: StartDragRequest) => ipcRenderer.invoke('files:startDrag', req),
   prepareDrag: (req: PrepareDragRequest) => ipcRenderer.invoke('files:prepareDrag', req),
-  startDragLocal: (filePath: string, opts?: { isDir?: boolean }) =>
-    ipcRenderer.sendSync('files:startDragLocal', filePath, opts),
   listPeers: () => ipcRenderer.invoke('peers:list'),
   onPeersUpdate: (cb: (peers: Peer[]) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, peers: Peer[]): void => cb(peers)
@@ -50,6 +47,7 @@ const api: AntishareApi = {
   remoteUpload: (req: RemoteUploadRequest) => ipcRenderer.invoke('remote:upload', req),
   importLocal: (req: ImportLocalRequest) => ipcRenderer.invoke('files:importLocal', req),
   importRemote: (req: RemoteImportRequest) => ipcRenderer.invoke('files:importRemote', req),
+  exportItems: (req: ExportItemsRequest) => ipcRenderer.invoke('files:exportItems', req),
   mkdirLocal: (req: FsMkdirRequest) => ipcRenderer.invoke('files:mkdir', req),
   renameLocal: (req: FsRenameRequest) => ipcRenderer.invoke('files:rename', req),
   removeLocal: (req: FsRemoveRequest) => ipcRenderer.invoke('files:remove', req),

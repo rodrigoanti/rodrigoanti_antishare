@@ -19,8 +19,8 @@ import {
   type RemoteUploadRequest,
   type ImportLocalRequest,
   type RemoteImportRequest,
-  type StartDragRequest,
-  type StartDragResult,
+  type ExportItemsRequest,
+  type ExportItemsResult,
   type PrepareDragRequest,
   type PrepareDragResult,
   type FsMkdirRequest,
@@ -42,9 +42,10 @@ import {
 } from './remote'
 import { mkdirLocal, removeLocal, renameLocal } from './fsOps'
 import { importLocalPaths, importRemotePaths } from './importFiles'
+import { exportItemsToFolder } from './exportItems'
 import { loadSettings, saveSettings } from './settings'
 import { runNetworkDiagnose } from './diagnose'
-import { handlePrepareDrag, handleStartDrag, handleStartDragLocal, ensureDragIconFile } from './drag'
+import { handlePrepareDrag, ensureDragIconFile } from './drag'
 import { buildShareUrls, uniqueHosts } from './net'
 
 function liveShareUrls(port: number = DEFAULT_SHARE_PORT): string[] {
@@ -268,6 +269,11 @@ export function registerIpc(): void {
   ipcMain.handle('files:importRemote', async (_e, req: RemoteImportRequest) =>
     importRemotePaths(req)
   )
+  ipcMain.handle(
+    'files:exportItems',
+    async (_e, req: ExportItemsRequest): Promise<ExportItemsResult> =>
+      exportItemsToFolder(resolveLocalRoot(), req)
+  )
   ipcMain.handle('files:mkdir', async (_e, req: FsMkdirRequest) =>
     mkdirLocal(resolveLocalRoot(), req)
   )
@@ -297,22 +303,9 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(
-    'files:startDrag',
-    async (event, req: StartDragRequest): Promise<StartDragResult> =>
-      handleStartDrag(event, req, resolveLocalRoot())
-  )
-
-  ipcMain.handle(
     'files:prepareDrag',
     async (_e, req: PrepareDragRequest): Promise<PrepareDragResult> =>
       handlePrepareDrag(req, resolveLocalRoot())
-  )
-
-  ipcMain.on(
-    'files:startDragLocal',
-    (event, filePath: string, opts?: { isDir?: boolean }) => {
-      event.returnValue = handleStartDragLocal(event, filePath, opts, resolveLocalRoot())
-    }
   )
 }
 

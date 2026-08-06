@@ -19,7 +19,7 @@
     "smoke:import": "tsx scripts/smoke-import.ts",
     "smoke:fsops": "tsx scripts/smoke-fsops.ts",
     "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac dir --mac dmg",
+    "dist:mac": "npm run build && electron-builder --mac dir",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:win:portable": "npm run build && electron-builder --win portable --x64"
   },

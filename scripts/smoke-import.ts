@@ -38,7 +38,7 @@ function seed(): void {
 async function main(): Promise<void> {
   seed()
   try {
-    const file = importLocalPaths(shareRoot, {
+    const file = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'hello.txt')],
       destPath: ''
     })
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       'local file contenido'
     )
 
-    const nested = importLocalPaths(shareRoot, {
+    const nested = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'nested')],
       destPath: ''
     })
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     assert(readFileSync(join(shareRoot, 'nested', 'a', 'b.txt'), 'utf8').includes('deep'))
     assert(readFileSync(join(shareRoot, 'nested', 'readme.txt'), 'utf8').includes('top'))
 
-    const empty = importLocalPaths(shareRoot, {
+    const empty = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'empty')],
       destPath: ''
     })
@@ -64,29 +64,29 @@ async function main(): Promise<void> {
     assert(statSync(join(shareRoot, 'empty')).isDirectory(), 'local empty no es carpeta')
     assert(readdirSync(join(shareRoot, 'empty')).length === 0, 'local empty no está vacía')
 
-    const batch = importLocalPaths(shareRoot, {
+    const batch = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'hello.txt'), join(outside, 'empty')],
       destPath: ''
     })
     assert(batch.ok && batch.imported === 2, `local batch: ${batch.error}`)
     assert(existsSync(join(shareRoot, 'hello (1).txt')), 'colisión de nombre no uniquificó')
 
-    const trav = importLocalPaths(shareRoot, {
+    const trav = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'hello.txt')],
       destPath: '../outside'
     })
     assert(!trav.ok, `traversal dest debía fallar: ${trav.error}`)
 
-    const rel = importLocalPaths(shareRoot, { sources: ['relative.txt'] })
+    const rel = await importLocalPaths(shareRoot, { sources: ['relative.txt'] })
     assert(!rel.ok, 'origen relativo debía fallar')
 
-    const missing = importLocalPaths(shareRoot, { sources: [join(outside, 'nope.bin')] })
+    const missing = await importLocalPaths(shareRoot, { sources: [join(outside, 'nope.bin')] })
     assert(!missing.ok, 'origen inexistente debía fallar')
 
-    const self = importLocalPaths(shareRoot, { sources: [shareRoot] })
+    const self = await importLocalPaths(shareRoot, { sources: [shareRoot] })
     assert(!self.ok, `importar el share en sí mismo debía fallar: ${self.error}`)
 
-    const alreadyThere = importLocalPaths(shareRoot, {
+    const alreadyThere = await importLocalPaths(shareRoot, {
       sources: [join(shareRoot, 'nested')],
       destPath: ''
     })
@@ -96,7 +96,17 @@ async function main(): Promise<void> {
       `mensaje same-parent: ${alreadyThere.error}`
     )
 
-    const nestSelf = importLocalPaths(shareRoot, {
+    const fileAlreadyThere = await importLocalPaths(shareRoot, {
+      sources: [join(shareRoot, 'hello.txt')],
+      destPath: ''
+    })
+    assert(!fileAlreadyThere.ok, `re-drop archivo en raíz debía fallar: ${fileAlreadyThere.error}`)
+    assert(
+      /ya está en este destino/i.test(fileAlreadyThere.error ?? ''),
+      `mensaje file same-parent: ${fileAlreadyThere.error}`
+    )
+
+    const nestSelf = await importLocalPaths(shareRoot, {
       sources: [join(shareRoot, 'nested')],
       destPath: 'nested'
     })
@@ -106,7 +116,7 @@ async function main(): Promise<void> {
       `mensaje nest-into-self: ${nestSelf.error}`
     )
 
-    const outsideOk = importLocalPaths(shareRoot, {
+    const outsideOk = await importLocalPaths(shareRoot, {
       sources: [join(outside, 'hello.txt')],
       destPath: 'nested'
     })

@@ -26,7 +26,9 @@ import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
 import {
   beginInternalFileDrag,
   endInternalFileDrag,
+  getInternalDragSourceParent,
   isInternalFileDragActive,
+  isOsDropAlreadyInFolder,
   isOsFileDrag,
   markInternalDrag,
   osDropPaths,
@@ -126,7 +128,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   const [tokenDraft, setTokenDraft] = useState('')
   const [tokenError, setTokenError] = useState<string | null>(null)
   const [busyFile, setBusyFile] = useState<string | null>(null)
-  const [dragBusyPath, setDragBusyPath] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [dropActive, setDropActive] = useState(false)
   const [renameMode, setRenameMode] = useState<
@@ -140,10 +141,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   /** True while listing fails — used for unstable-connection UX; poll stays at 2s. */
   const connectionUnstable = useRef(false)
   const tokenInputRef = useRef<HTMLInputElement>(null)
-  /** Remote drag: absolute path from prepareDrag, keyed by entry.path */
-  const preparedDragRef = useRef<Map<string, { promise: Promise<string | null>; filePath?: string }>>(
-    new Map()
-  )
   const dropDepthRef = useRef(0)
   const renameCommitLock = useRef(false)
   const activeNavIdRef = useRef('')
@@ -337,7 +334,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setListFailed(false)
     setListUnreachable(false)
     setErrorRaw(null)
-    preparedDragRef.current.clear()
     activeNavIdRef.current = navId(nav)
     tokenPromptedForRef.current = null
 
@@ -669,83 +665,84 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setBusyFile(null)
   }
 
-  function prepareEntryDrag(entry: DirEntry): void {
-    if (nav.kind === 'root') return
-    const existing = preparedDragRef.current.get(entry.path)
-    if (existing?.filePath || existing?.promise) return
-
-    setDragBusyPath(entry.path)
-    const promise = (async (): Promise<string | null> => {
-      try {
-        const result =
-          nav.kind === 'local'
-            ? await api.prepareDrag({
-                kind: 'local',
-                path: entry.path,
-                isDir: entry.isDir
-              })
-            : await api.prepareDrag({
-                kind: 'remote',
-                baseUrl: nav.peer.baseUrl,
-                path: entry.path,
-                token: nav.token,
-                isDir: entry.isDir
-              })
-        if (!result.ok || !result.filePath) {
-          toast.error(
-            mapIpcError(result.error, `No se pudo preparar «${entry.name}» para arrastrar.`)
-          )
-          preparedDragRef.current.delete(entry.path)
-          return null
-        }
-        const prev = preparedDragRef.current.get(entry.path)
-        preparedDragRef.current.set(entry.path, {
-          promise: prev?.promise ?? Promise.resolve(result.filePath),
-          filePath: result.filePath
-        })
-        return result.filePath
-      } catch (err) {
-        toast.error(
-          mapIpcError(
-            err instanceof Error ? err.message : String(err),
-            `No se pudo preparar «${entry.name}» para arrastrar.`
-          )
-        )
-        preparedDragRef.current.delete(entry.path)
-        return null
-      } finally {
-        setDragBusyPath((cur) => (cur === entry.path ? null : cur))
-      }
-    })()
-    preparedDragRef.current.set(entry.path, { promise })
-  }
-
-  function handleEntryDragStart(entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+  /** HTML5 internal drag only — never starts native OS startDrag (no Finder/Explorer drag-out). */
+  function handleEntryDragStart(_entry: DirEntry, e: DragEvent<HTMLButtonElement>): void {
     if (nav.kind === 'root') {
       e.preventDefault()
       return
     }
-    const filePath =
-      nav.kind === 'local' ? entry.path : preparedDragRef.current.get(entry.path)?.filePath
-    if (!filePath) {
-      e.preventDefault()
-      return
-    }
     markInternalDrag(e.dataTransfer)
-    const result = api.startDragLocal(filePath, { isDir: entry.isDir })
-    if (!result.ok) {
-      e.preventDefault()
-      toast.error(
-        mapIpcError(result.error, `No se pudo arrastrar «${entry.name}» al Finder o Explorador.`)
+    beginInternalFileDrag(nav.path || '')
+  }
+
+  async function saveEntryAs(entry: DirEntry): Promise<void> {
+    if (nav.kind === 'root' || opBusy) return
+    const destDir = await api.selectFolder()
+    if (!destDir) return
+    setOpBusy(true)
+    try {
+      const result = await api.exportItems({
+        destDir,
+        items:
+          nav.kind === 'local'
+            ? [{ kind: 'local', path: entry.path, isDir: entry.isDir }]
+            : [
+                {
+                  kind: 'remote',
+                  path: entry.path,
+                  isDir: entry.isDir,
+                  baseUrl: nav.peer.baseUrl,
+                  token: nav.token
+                }
+              ]
+      })
+      if (!result.ok) {
+        toast.error(mapIpcError(result.error, `No se pudo guardar «${entry.name}».`))
+        return
+      }
+      const first = result.destPaths?.[0]
+      toast.success(
+        result.exported === 1 ? `«${entry.name}» guardado.` : `${result.exported} ítems guardados.`,
+        first
+          ? {
+              action: {
+                label: 'Mostrar',
+                onClick: () => void revealDownload(first)
+              }
+            }
+          : undefined
       )
-      return
+    } catch (err) {
+      toast.error(
+        mapIpcError(
+          err instanceof Error ? err.message : String(err),
+          `No se pudo guardar «${entry.name}».`
+        )
+      )
+    } finally {
+      setOpBusy(false)
     }
-    beginInternalFileDrag()
   }
 
   useEffect(() => {
+    const restoreRendererFocus = (): void => {
+      try {
+        window.focus()
+        const active = document.activeElement
+        if (
+          active instanceof HTMLElement &&
+          (active === document.body || active === document.documentElement)
+        ) {
+          const finder = document.querySelector('.finder') as HTMLElement | null
+          finder?.focus({ preventScroll: true })
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     const end = (): void => {
       endInternalFileDrag()
+      restoreRendererFocus()
     }
     // dragend: capture. drop: bubble so pane handlers see the flag first.
     window.addEventListener('dragend', end, true)
@@ -761,10 +758,37 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setDropActive(false)
   }, [nav])
 
+  /** Internal drag whose source parent is the folder currently open. */
+  function isInternalSameFolderDrag(): boolean {
+    if (!isInternalFileDragActive()) return false
+    if (nav.kind === 'root') return false
+    const sourceParent = getInternalDragSourceParent()
+    if (sourceParent === null) return true
+    return sourceParent === (nav.path || '')
+  }
+
+  function isOsSameFolderDrop(dt: DataTransfer): boolean {
+    return nav.kind === 'local' && isOsDropAlreadyInFolder(dt, status?.folder, nav.path || '')
+  }
+
+  function rejectDropVisual(e: DragEvent): void {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'none'
+    setDropActive(false)
+  }
+
   function acceptOsDrop(e: DragEvent): boolean {
     if (nav.kind === 'root') return false
-    if (isInternalFileDragActive()) return false
+    // AntiShare→AntiShare: never allow import; same-folder shows not-allowed cursor.
+    if (isInternalFileDragActive()) {
+      rejectDropVisual(e)
+      return false
+    }
     if (!isOsFileDrag(e.dataTransfer)) return false
+    if (isOsSameFolderDrop(e.dataTransfer)) {
+      rejectDropVisual(e)
+      return false
+    }
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     return true
@@ -831,7 +855,20 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     dropDepthRef.current = 0
     setDropActive(false)
     if (isInternalFileDragActive()) {
+      if (isInternalSameFolderDrag()) {
+        // Same folder: no import, no toast spam — drop is a no-op.
+        try {
+          window.focus()
+        } catch {
+          /* ignore */
+        }
+        return
+      }
       toast.error('No se puede soltar aquí un ítem arrastrado desde AntiShare.')
+      return
+    }
+    if (isOsSameFolderDrop(e.dataTransfer)) {
+      toast.error('Ya está en esta carpeta.')
       return
     }
     if (!isOsFileDrag(e.dataTransfer) || importing) return
@@ -1003,9 +1040,9 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   return (
     <section
-      className={`finder${dragBusyPath || importing || shareStarting ? ' finder-drag-busy' : ''}`}
+      className={`finder${importing || shareStarting || opBusy ? ' finder-drag-busy' : ''}`}
       aria-label="Compartidos"
-      aria-busy={Boolean(dragBusyPath || importing || shareStarting)}
+      aria-busy={Boolean(importing || shareStarting || opBusy)}
       tabIndex={-1}
     >
       <header className={`finder-toolbar${contentScrolled ? ' scrolled' : ''}`}>
@@ -1249,13 +1286,11 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                           onRenameCommit={() => void commitRename()}
                           onRenameCancel={cancelRename}
                           status={
-                            dragBusyPath === entry.path
-                              ? 'Preparando…'
-                              : entry.isDir
-                                ? 'Carpeta'
-                                : busyFile === entry.path
-                                  ? '…'
-                                  : 'Archivo'
+                            entry.isDir
+                              ? 'Carpeta'
+                              : busyFile === entry.path
+                                ? '…'
+                                : 'Archivo'
                           }
                           meta={
                             entry.isDir
@@ -1263,7 +1298,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                               : `${formatSize(entry.size, false)} · ${formatMtime(entry.mtime)}`
                           }
                           sizeLabel={formatSize(entry.size, entry.isDir)}
-                          dragPreparing={dragBusyPath === entry.path}
                           onClick={() => {
                             if (renameMode) return
                             setSelectedKey(entry.path)
@@ -1276,9 +1310,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                             e.preventDefault()
                             setSelectedKey(entry.path)
                             setMenu({ x: e.clientX, y: e.clientY, entry })
-                          }}
-                          onPointerDown={() => {
-                            if (!renameMode) prepareEntryDrag(entry)
                           }}
                           onDragStart={(e) => handleEntryDragStart(entry, e)}
                         />
@@ -1316,6 +1347,11 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
                   id: 'open',
                   label: 'Abrir',
                   onSelect: () => void openEntry(menu.entry)
+                },
+                {
+                  id: 'saveAs',
+                  label: 'Guardar como…',
+                  onSelect: () => void saveEntryAs(menu.entry)
                 },
                 {
                   id: 'rename',
