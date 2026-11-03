@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import type { SyncStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
 import { useShareStatus } from '../shareStatus'
 import { Alert, Button, Input, LockBadge, toast } from '../ui'
@@ -11,6 +12,20 @@ function isLoopbackShareUrl(url: string): boolean {
   } catch {
     return /(?:^|\/\/)(?:127\.0\.0\.1|localhost|\[::1\])/i.test(url)
   }
+}
+
+const SYNC_STATE_LABEL: Record<SyncStatus['state'], string> = {
+  idle: 'Al día',
+  scanning: 'Revisando cambios…',
+  syncing: 'Sincronizando…',
+  error: 'Error de sincronización'
+}
+
+function syncSummary(sync: SyncStatus): string {
+  const peers =
+    sync.peers === 0 ? 'sin otros equipos conectados' : sync.peers === 1 ? '1 equipo' : `${sync.peers} equipos`
+  const files = sync.files === 1 ? '1 archivo' : `${sync.files} archivos`
+  return `${files} · ${peers}`
 }
 
 function splitShareUrls(urls: string[]): { lan: string[]; local: string[] } {
@@ -32,6 +47,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
   const { status, refreshStatus, setStatus } = useShareStatus()
   const [folder, setFolder] = useState('')
   const [token, setToken] = useState('')
+  const [syncSpace, setSyncSpace] = useState('')
   const [autoStart, setAutoStart] = useState(false)
   const [busy, setBusy] = useState(false)
   const [restoredNote, setRestoredNote] = useState(false)
@@ -45,6 +61,7 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
       skipNextSave.current = true
       setFolder(settings.folder ?? '')
       setToken(settings.token ?? '')
+      setSyncSpace(settings.syncSpace ?? '')
       setAutoStart(settings.autoStart)
       setStatus(share)
       if (share.running && settings.autoStart) {
@@ -74,13 +91,14 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
       void api.setSettings({
         folder: folder.trim() || null,
         token: token.trim(),
+        syncSpace: syncSpace.trim(),
         autoStart
       })
     }, 400)
     return () => {
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current)
     }
-  }, [api, folder, token, autoStart, hydrated])
+  }, [api, folder, token, syncSpace, autoStart, hydrated])
 
   async function pickFolder(): Promise<void> {
     const path = await api.selectFolder()
@@ -99,7 +117,9 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
     }
     const result = await api.startShare({
       folder: folder.trim(),
-      token: token.trim() || undefined
+      // Empty strings are explicit: "no key" / "no sync", not "keep the saved one".
+      token: token.trim(),
+      syncSpace: syncSpace.trim()
     })
     if (!result.ok) {
       toast.error(mapIpcError(result.error, 'No se pudo iniciar el share.'))
@@ -186,6 +206,22 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
           />
         </div>
 
+        <div className="field">
+          <label htmlFor="sync-space">Espacio de sincronización (opcional)</label>
+          <Input
+            id="sync-space"
+            autoComplete="off"
+            value={syncSpace}
+            onChange={(e) => setSyncSpace(e.target.value)}
+            placeholder="Vacío = solo compartir esta carpeta"
+            disabled={running}
+          />
+          <p className="url-group-hint">
+            Los equipos con el mismo espacio y la misma clave mantienen una sola carpeta
+            sincronizada. Si dos editan el mismo archivo, se guarda una copia de conflicto.
+          </p>
+        </div>
+
         <label className="check-row">
           <input
             type="checkbox"
@@ -219,6 +255,22 @@ export function ShareSettings({ onOpenLocal }: ShareSettingsProps): ReactElement
         <span className="status-label">{running ? 'En ejecución' : 'Detenido'}</span>
         {status?.tokenRequired ? <LockBadge /> : null}
       </div>
+
+      {running && status?.sync && (
+        <div className="status-bar" role="status" aria-live="polite">
+          <span
+            className={`status-dot ${status.sync.state === 'error' ? 'off' : 'on'}`}
+            aria-hidden="true"
+          />
+          <span className="status-label">
+            {SYNC_STATE_LABEL[status.sync.state]} — espacio «{status.sync.space}»
+          </span>
+          <span className="url-group-hint">
+            {status.sync.error ?? syncSummary(status.sync)}
+            {status.sync.conflicts > 0 ? ` · ${status.sync.conflicts} conflictos` : ''}
+          </span>
+        </div>
+      )}
 
       {running && (
         <div className="url-groups">

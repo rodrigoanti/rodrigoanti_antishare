@@ -18,6 +18,7 @@
     "smoke:drag": "tsx scripts/smoke-drag.ts",
     "smoke:import": "tsx scripts/smoke-import.ts",
     "smoke:fsops": "tsx scripts/smoke-fsops.ts",
+    "smoke:sync": "tsx scripts/smoke-sync.ts",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac dir",
     "dist:win": "npm run build && electron-builder --win nsis --x64",

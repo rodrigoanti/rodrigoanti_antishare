@@ -38,6 +38,10 @@ function createWindow(): void {
     win.show()
     requestLocalNetworkAccess()
   })
+  // Last line of defense: the app window never leaves its own page (e.g. an unhandled file drop).
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win.webContents.getURL()) e.preventDefault()
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }

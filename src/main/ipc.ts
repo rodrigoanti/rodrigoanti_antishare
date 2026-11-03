@@ -1,6 +1,8 @@
-import { dialog, ipcMain, BrowserWindow, shell } from 'electron'
+import { app, dialog, ipcMain, BrowserWindow, shell } from 'electron'
+import { createHash } from 'crypto'
 import { existsSync, statSync } from 'fs'
 import { hostname } from 'os'
+import { join } from 'path'
 import {
   DEFAULT_SHARE_PORT,
   type DirEntry,
@@ -46,7 +48,8 @@ import {
 import { mkdirLocal, moveLocal, removeLocal, renameLocal } from './fsOps'
 import { importLocalPaths, importRemotePaths } from './importFiles'
 import { exportItemsToFolder } from './exportItems'
-import { loadSettings, saveSettings } from './settings'
+import { loadDeviceId, loadSettings, saveSettings } from './settings'
+import { SyncEngine } from './syncEngine'
 import { runNetworkDiagnose } from './diagnose'
 import { handlePrepareDrag, ensureDragIconFile } from './drag'
 import { buildShareUrls, uniqueHosts } from './net'
@@ -56,7 +59,19 @@ function liveShareUrls(port: number = DEFAULT_SHARE_PORT): string[] {
 }
 
 let share: ShareServerHandle | null = null
+let sync: SyncEngine | null = null
 const discovery = new PeerDiscovery()
+
+function stopSync(): void {
+  sync?.stop()
+  sync = null
+}
+
+/** One index per folder + space pair, kept in userData so it never syncs itself. */
+function syncIndexFile(root: string, space: string): string {
+  const key = createHash('sha1').update(`${root}\0${space}`).digest('hex')
+  return join(app.getPath('userData'), 'sync', `${key}.json`)
+}
 
 function broadcastPeers(peers: Peer[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -78,6 +93,7 @@ function bindErrorMessage(err: unknown): string {
 
 async function startShareInternal(req: ShareStartRequest): Promise<ShareStartResult> {
   try {
+    stopSync()
     if (share) {
       await share.stop()
       share = null
@@ -87,9 +103,23 @@ async function startShareInternal(req: ShareStartRequest): Promise<ShareStartRes
     const handle = await startShareServer({
       folder: req.folder,
       port,
-      token: req.token
+      token: req.token,
+      sync: () => sync
     })
     share = handle
+    const space = req.syncSpace?.trim()
+    if (space) {
+      sync = new SyncEngine({
+        root: handle.folder,
+        space,
+        token: req.token,
+        indexFile: syncIndexFile(handle.folder, space),
+        deviceId: loadDeviceId(),
+        deviceName: hostname(),
+        listPeers: () => discovery.list()
+      })
+      sync.start()
+    }
     // Announce only while this exact server is the live one and still bound.
     discovery.setAnnounce({
       name: hostname(),
@@ -150,7 +180,8 @@ export async function restoreAutoStart(): Promise<void> {
   }
   const result = await startShareInternal({
     folder: settings.folder,
-    token: settings.token
+    token: settings.token,
+    syncSpace: settings.syncSpace
   })
   if (!result.ok) {
     console.error('[settings] autoStart failed:', result.error)
@@ -177,12 +208,20 @@ export function registerIpc(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('share:start', async (_e, req: ShareStartRequest): Promise<ShareStartResult> => {
-    const result = await startShareInternal(req)
+  ipcMain.handle('share:start', async (_e, raw: ShareStartRequest): Promise<ShareStartResult> => {
+    // Fields left out (quick share from a folder drop) keep the saved key and sync space.
+    const saved = loadSettings()
+    const req: ShareStartRequest = {
+      ...raw,
+      token: raw.token !== undefined ? raw.token : saved.token,
+      syncSpace: raw.syncSpace !== undefined ? raw.syncSpace : saved.syncSpace
+    }
+    const result = await startShareInternal({ ...req, token: req.token || undefined })
     if (result.ok) {
       saveSettings({
         folder: req.folder,
         token: req.token && req.token.length > 0 ? req.token : '',
+        syncSpace: req.syncSpace ?? '',
         autoStart: true
       })
     }
@@ -191,6 +230,7 @@ export function registerIpc(): void {
 
   ipcMain.handle('share:stop', async (): Promise<ShareStopResult> => {
     try {
+      stopSync()
       if (share) {
         await share.stop()
         share = null
@@ -219,7 +259,8 @@ export function registerIpc(): void {
       folder: share.folder,
       port: share.port,
       urls: liveShareUrls(share.port),
-      tokenRequired: share.tokenRequired
+      tokenRequired: share.tokenRequired,
+      ...(sync ? { sync: sync.getStatus() } : {})
     }
   })
 
@@ -371,6 +412,7 @@ export function registerIpc(): void {
 
 export async function shutdownShare(): Promise<void> {
   discovery.stopListening()
+  stopSync()
   if (share) {
     await share.stop()
     share = null

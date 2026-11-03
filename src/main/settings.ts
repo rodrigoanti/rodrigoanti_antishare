@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { ShareSettings } from '../shared/types'
@@ -32,6 +33,7 @@ export function loadSettings(): ShareSettings {
       typeof raw.autoStart === 'boolean' ? raw.autoStart : Boolean(folder)
     const out: ShareSettings = { folder, autoStart }
     if (token !== undefined) out.token = token
+    if (typeof raw.syncSpace === 'string' && raw.syncSpace.trim()) out.syncSpace = raw.syncSpace.trim()
     // Rewrite without port if legacy field present
     if ('port' in raw) {
       try {
@@ -47,12 +49,35 @@ export function loadSettings(): ShareSettings {
   }
 }
 
+/** Stable per-install id used in sync version vectors (never changes once created). */
+export function loadDeviceId(): string {
+  const path = join(app.getPath('userData'), 'device-id')
+  try {
+    if (existsSync(path)) {
+      const id = readFileSync(path, 'utf8').trim()
+      if (id) return id
+    }
+  } catch {
+    /* regenerate below */
+  }
+  const id = randomUUID()
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, id, 'utf8')
+  } catch (err) {
+    console.error('[settings] device id save failed', err instanceof Error ? err.message : err)
+  }
+  return id
+}
+
 export function saveSettings(partial: Partial<ShareSettings> & { token?: string }): ShareSettings {
   const current = loadSettings()
   const next: ShareSettings = {
     folder: partial.folder !== undefined ? partial.folder : current.folder,
     autoStart: partial.autoStart !== undefined ? partial.autoStart : current.autoStart
   }
+  const syncSpace = (partial.syncSpace !== undefined ? partial.syncSpace : current.syncSpace)?.trim()
+  if (syncSpace) next.syncSpace = syncSpace
 
   if ('token' in partial) {
     if (partial.token && partial.token.length > 0) {

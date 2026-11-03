@@ -1,3 +1,5 @@
+import { getApi } from './api'
+
 export const ANTISHARE_INTERNAL_DRAG = 'application/x-antishare-internal'
 
 /** Session flag: track AntiShare→self drops (HTML5 internal drag). */
@@ -69,8 +71,18 @@ export function isOsFileDrag(dt: DataTransfer | null | undefined): boolean {
 
 type FileWithPath = File & { path?: string }
 
+/** webUtils path first; legacy File.path only as fallback (removed in Electron 32). */
+function filePath(file: File | null): string | undefined {
+  if (!file) return undefined
+  return getApi().getPathForFile(file) || (file as FileWithPath).path
+}
+
+/** macOS and Windows volumes are case-insensitive by default. */
+const CASE_INSENSITIVE_FS = ['darwin', 'win32'].includes(getApi().platform)
+
 function normPath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const n = p.replace(/\\/g, '/').replace(/\/+$/, '')
+  return CASE_INSENSITIVE_FS ? n.toLowerCase() : n
 }
 
 function parentDir(p: string): string {
@@ -84,7 +96,7 @@ function joinShareRoot(root: string, rel: string): string {
   const p = String(rel || '')
     .replace(/\\/g, '/')
     .replace(/^\/+|\/+$/g, '')
-  return p ? `${r}/${p}` : r
+  return p ? normPath(`${r}/${p}`) : r
 }
 
 export function osDropPaths(dt: DataTransfer): string[] {
@@ -102,14 +114,13 @@ export function osDropPaths(dt: DataTransfer): string[] {
     for (let i = 0; i < dt.items.length; i++) {
       const item = dt.items[i]
       if (item.kind !== 'file') continue
-      const file = item.getAsFile() as FileWithPath | null
-      push(file?.path)
+      push(filePath(item.getAsFile()))
     }
     if (out.length > 0) return out
   }
 
   for (const file of Array.from(dt.files)) {
-    push((file as FileWithPath).path)
+    push(filePath(file))
   }
   return out
 }

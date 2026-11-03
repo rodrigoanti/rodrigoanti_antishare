@@ -7,3 +7,4 @@ dist
 .env.*
 *.tsbuildinfo
 .iaterminal
+.iaterminal/github/

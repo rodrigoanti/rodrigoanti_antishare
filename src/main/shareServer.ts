@@ -19,9 +19,10 @@ import { join, resolve, sep } from 'path'
 import { tmpdir } from 'os'
 import { pipeline } from 'stream/promises'
 import Busboy from 'busboy'
-import type { DirEntry } from '../shared/types'
+import type { DirEntry, SyncIndexResponse } from '../shared/types'
 import { buildShareUrls } from './net'
 import { isInsideRoot, resolveSafe } from './pathSafe'
+import { SYNC_TEMP_PREFIX } from './syncIndex'
 import {
   httpStatusForFsError,
   mkdirInShare,
@@ -36,6 +37,13 @@ export interface ShareServerOptions {
   folder: string
   port: number
   token?: string
+  /** Folder sync hooks; read lazily so the engine can attach after the server binds. */
+  sync?: () => ShareSyncHooks | null
+}
+
+export interface ShareSyncHooks {
+  indexResponse: () => SyncIndexResponse
+  onNotify: (space: string, deviceId: string) => void
 }
 
 export interface ShareServerHandle {
@@ -74,7 +82,7 @@ function listDir(root: string, relPath: string): DirEntry[] {
     throw new Error('Not a directory')
   }
   const rootReal = realpathSync(root)
-  const names = readdirSync(abs)
+  const names = readdirSync(abs).filter((n) => !n.startsWith(SYNC_TEMP_PREFIX))
   return names.map((name) => {
     const full = join(abs, name)
     const lst = lstatSync(full)
@@ -382,6 +390,29 @@ export async function startShareServer(opts: ShareServerOptions): Promise<ShareS
           if (!res.headersSent) {
             sendJson(res, msg.includes('traversal') ? 403 : 500, { error: msg })
           }
+        }
+        return
+      }
+
+      if (method === 'GET' && pathname === '/api/sync/index') {
+        const hooks = opts.sync?.()
+        if (!hooks) {
+          sendJson(res, 404, { error: 'Sync not enabled' })
+          return
+        }
+        sendJson(res, 200, hooks.indexResponse())
+        return
+      }
+
+      if (method === 'POST' && pathname === '/api/sync/notify') {
+        const hooks = opts.sync?.()
+        try {
+          const body = await readJsonBody(req)
+          hooks?.onNotify(strField(body, 'space'), strField(body, 'deviceId'))
+          sendJson(res, hooks ? 200 : 404, { ok: Boolean(hooks) })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (!res.headersSent) sendJson(res, 400, { error: msg })
         }
         return
       }

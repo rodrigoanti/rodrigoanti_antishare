@@ -49,6 +49,21 @@ Generic pack: `npm run dist` (uses targets from `electron-builder.yml`).
 
 Optional header: `X-Share-Token` when a token is configured.
 
+## Folder sync (shared space)
+
+Set a **sync space** next to the folder: every machine with the same space and key keeps one identical copy of the folder (pull-only, no central server).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/sync/index` | `{ space, deviceId, deviceName, entries }` — per-file hash + version vector; 404 when sync is off |
+| POST | `/api/sync/notify` | `{ space, deviceId }` — "I have changes", peers pull right away |
+
+- Local edits: folder watcher + rescan every 20s (`src/main/syncIndex.ts`).
+- Remote changes: download to a temp file, verify sha256, then swap in (`src/main/syncEngine.ts`).
+- Deletions propagate as tombstones; an edit always beats a concurrent delete.
+- Concurrent edits: the most recent save keeps the name, the other becomes `name (conflicto de PC fecha).ext`.
+- Index lives in `userData/sync/`, never inside the shared folder. Smoke: `npm run smoke:sync`.
+
 ### curl examples
 
 ```bash

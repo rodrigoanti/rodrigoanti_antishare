@@ -11,6 +11,7 @@ const emptySettings = (): ShareSettings => ({
 function createStub(): AntishareApi {
   return {
     platform: 'unknown',
+    getPathForFile: () => '',
     selectFolder: async () => {
       console.warn(stubError('selectFolder'))
       return null

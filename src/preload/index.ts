@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AntishareApi,
   FsMkdirRequest,
@@ -28,6 +28,13 @@ import type {
 
 const api: AntishareApi = {
   platform: process.platform,
+  getPathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
   selectFolder: () => ipcRenderer.invoke('share:selectFolder'),
   startShare: (req: ShareStartRequest) => ipcRenderer.invoke('share:start', req),
   stopShare: () => ipcRenderer.invoke('share:stop'),

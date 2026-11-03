@@ -50,6 +50,8 @@ export interface ShareStartRequest {
   /** Ignored — share always binds DEFAULT_SHARE_PORT (8765). */
   port?: number
   token?: string
+  /** Sync space name; machines with the same space keep one shared copy of the folder. */
+  syncSpace?: string
 }
 
 export interface ShareStartResult {
@@ -70,6 +72,8 @@ export interface ShareStatus {
   port: number | null
   urls: string[]
   tokenRequired: boolean
+  /** Present while folder sync runs (share started with a sync space). */
+  sync?: SyncStatus
 }
 
 /** Persisted local share preferences (Electron userData). Port is fixed at 8765. */
@@ -77,6 +81,47 @@ export interface ShareSettings {
   folder: string | null
   token?: string
   autoStart: boolean
+  /** Empty = no sync (classic per-machine share). */
+  syncSpace?: string
+}
+
+/** Per-device edit counters for one file; compared to detect newer vs concurrent edits. */
+export type VersionVector = Record<string, number>
+
+/** One file as seen by the sync index (paths are share-relative, `/`-separated). */
+export interface SyncEntry {
+  path: string
+  /** sha256 hex; empty for deletions. */
+  hash: string
+  size: number
+  /** Tombstone: the file was deleted and the deletion must propagate. */
+  deleted: boolean
+  version: VersionVector
+  /** Device that produced this version (used to break ties in conflicts). */
+  modifiedBy: string
+  modifiedAt: number
+}
+
+/** GET /api/sync/index payload. */
+export interface SyncIndexResponse {
+  space: string
+  deviceId: string
+  deviceName: string
+  entries: SyncEntry[]
+}
+
+export type SyncState = 'idle' | 'scanning' | 'syncing' | 'error'
+
+export interface SyncStatus {
+  space: string
+  state: SyncState
+  /** Peers in the same space reached on the last round. */
+  peers: number
+  files: number
+  /** Conflict copies created since sync started. */
+  conflicts: number
+  lastSyncAt: number | null
+  error?: string
 }
 
 export interface ShareListLocalRequest {
@@ -310,6 +355,8 @@ export interface ExportItemsResult {
 export interface AntishareApi {
   /** Host platform ('darwin' | 'win32' | 'linux' | 'unknown'), for window-chrome styling only. */
   platform: string
+  /** Absolute OS path of a dropped File ('' when it has none, e.g. browser-generated data). */
+  getPathForFile: (file: File) => string
   selectFolder: () => Promise<string | null>
   startShare: (req: ShareStartRequest) => Promise<ShareStartResult>
   stopShare: () => Promise<ShareStopResult>
