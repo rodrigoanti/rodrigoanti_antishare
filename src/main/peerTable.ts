@@ -5,7 +5,7 @@
  * rebuilt from each announcement instead of merged with the previous one, so an address
  * the peer no longer advertises cannot come back to life.
  */
-import { PEER_STALE_MS, type Peer } from '../shared/types'
+import { PEER_STALE_MS, type AnnouncedGroup, type Peer } from '../shared/types'
 import { normalizeHost, pickPeerPrimary, rankPeerHosts, uniqueHosts, type LanIface } from './net'
 
 /** One announcement as received: payload fields plus the UDP source address. */
@@ -20,6 +20,25 @@ export interface PeerObservation {
   /** UDP source address (the only address with proven delivery). */
   fromHost?: string
   at?: number
+  groups?: AnnouncedGroup[]
+}
+
+/** Keep only well-formed group entries from an (untrusted) announcement. */
+export function sanitizeGroups(raw: unknown): AnnouncedGroup[] {
+  if (!Array.isArray(raw)) return []
+  const out: AnnouncedGroup[] = []
+  for (const g of raw.slice(0, 64)) {
+    const r = g as AnnouncedGroup
+    if (!r || typeof r.id !== 'string' || !/^[0-9a-f]{6,64}$/.test(r.id)) continue
+    if (typeof r.name !== 'string' || typeof r.keySince !== 'number') continue
+    out.push({
+      id: r.id,
+      name: r.name.slice(0, 80),
+      keySince: r.keySince,
+      ...(r.deleted ? { deleted: true } : {})
+    })
+  }
+  return out
 }
 
 export function peerKey(host: string, port: number): string {
@@ -27,7 +46,6 @@ export function peerKey(host: string, port: number): string {
 }
 
 export function isPeerExpired(peer: Peer, now: number, ttlMs: number): boolean {
-  if (peer.manual) return false
   return now - peer.lastSeen > ttlMs
 }
 
@@ -57,7 +75,8 @@ export function buildPeerRecord(
     tokenRequired: Boolean(obs.tokenRequired),
     lastSeen: obs.at ?? Date.now(),
     baseUrl: `http://${host}:${port}`,
-    hosts: hosts.length > 0 ? hosts : [host]
+    hosts: hosts.length > 0 ? hosts : [host],
+    ...(obs.groups && obs.groups.length > 0 ? { groups: obs.groups } : {})
   }
 }
 
@@ -69,14 +88,13 @@ function contentChanged(a: Peer, b: Peer): boolean {
     a.port !== b.port ||
     a.baseUrl !== b.baseUrl ||
     a.tokenRequired !== b.tokenRequired ||
-    Boolean(a.manual) !== Boolean(b.manual) ||
-    (a.hosts ?? []).join(',') !== (b.hosts ?? []).join(',')
+    (a.hosts ?? []).join(',') !== (b.hosts ?? []).join(',') ||
+    JSON.stringify(a.groups ?? []) !== JSON.stringify(b.groups ?? [])
   )
 }
 
 export class PeerTable {
   private peers = new Map<string, Peer>()
-  private manualKeys = new Set<string>()
   readonly ttlMs: number
 
   constructor(opts: { ttlMs?: number } = {}) {
@@ -124,14 +142,10 @@ export class PeerTable {
     if (matchKey && matchKey !== key) {
       // Same peer on a new address: drop the old entry so the dead IP disappears at once.
       this.peers.delete(matchKey)
-      if (this.manualKeys.delete(matchKey)) this.manualKeys.add(key)
     }
 
-    const next: Peer = prev?.manual || this.manualKeys.has(key)
-      ? { ...sticky, manual: true }
-      : sticky
-    this.peers.set(key, next)
-    return !prev || contentChanged(prev, next)
+    this.peers.set(key, sticky)
+    return !prev || contentChanged(prev, sticky)
   }
 
   /**
@@ -150,19 +164,6 @@ export class PeerTable {
       if (peer.port === record.port && peer.name === record.name) return k
     }
     return undefined
-  }
-
-  /** Manual peers are user-pinned and never expire. */
-  setManual(peer: Peer): void {
-    const key = peerKey(peer.host, peer.port)
-    this.manualKeys.add(key)
-    this.peers.set(key, { ...peer, manual: true })
-  }
-
-  removeManual(host: string, port: number): boolean {
-    const key = peerKey(normalizeHost(host), Number(port))
-    this.manualKeys.delete(key)
-    return this.peers.delete(key)
   }
 
   /** Reachable peers only: expired discovered peers are never returned. */
@@ -184,11 +185,10 @@ export class PeerTable {
     return changed
   }
 
-  /** Drop discovered peers matching `predicate` (manual entries are kept). */
+  /** Drop peers matching `predicate`. */
   forget(predicate: (peer: Peer, key: string) => boolean): boolean {
     let changed = false
     for (const [key, peer] of this.peers) {
-      if (peer.manual || this.manualKeys.has(key)) continue
       if (predicate(peer, key)) {
         this.peers.delete(key)
         changed = true
@@ -199,7 +199,6 @@ export class PeerTable {
 
   clear(): void {
     this.peers.clear()
-    this.manualKeys.clear()
   }
 
   get size(): number {

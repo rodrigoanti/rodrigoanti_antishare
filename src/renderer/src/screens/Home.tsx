@@ -5,25 +5,25 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type FormEvent,
   type ReactElement
 } from 'react'
 import {
   ArrowDown,
   ArrowUp,
-  Folder,
   FolderPlus,
+  FolderSync,
   LayoutGrid,
   List,
-  Monitor,
+  Lock,
   Moon,
-  Radio,
+  Plus,
   RefreshCw,
   Settings,
-  Sun
+  Sun,
+  Users
 } from 'lucide-react'
-import { PEER_STALE_MS, type DirEntry, type Peer, type ShareStatus } from '../../../shared/types'
-import { getApi, isNetworkReachabilityError, mapIpcError } from '../api'
+import type { DirEntry, DiscoveredGroup, GroupView } from '../../../shared/types'
+import { getApi, mapIpcError } from '../api'
 import {
   beginInternalFileDrag,
   endInternalFileDrag,
@@ -37,12 +37,13 @@ import {
   osDropPaths,
   osDropSingleDirectoryPath
 } from '../osDrop'
-import { useShareStatus } from '../shareStatus'
+import { useGroups } from '../groups'
 import { applyTheme, type Theme } from '../theme'
-import { Button, ContextMenu, Input, LockBadge, Modal, toast } from '../ui'
+import { Button, ContextMenu, Modal, SidePanel, toast } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
 import { fileGlyphKind, FolderIcon } from '../ui/FolderIcon'
-import { lanHostsFromShareUrls, PeerReachabilityAlert } from './PeerReachabilityAlert'
+import { CreateGroupModal, JoinGroupModal } from './GroupModals'
+import { GroupPanel, NetworkPanel, syncSummary } from './GroupPanel'
 
 const ICON_STROKE = 1.75
 const ICON_TOOL = 15
@@ -61,21 +62,15 @@ const SORT_LABELS: Record<SortKey, string> = {
   type: 'Tipo'
 }
 
-type Nav =
-  | { kind: 'root' }
-  | { kind: 'local'; path: string }
-  | { kind: 'peer'; peer: Peer; path: string; token?: string }
+type Nav = { kind: 'root' } | { kind: 'group'; groupId: string; path: string }
 
 function navId(n: Nav): string {
-  if (n.kind === 'peer') return `peer:${n.peer.baseUrl}:${n.path}`
-  if (n.kind === 'local') return `local:${n.path}`
-  return 'root'
+  return n.kind === 'group' ? `group:${n.groupId}:${n.path}` : 'root'
 }
 
 function sortStorageKey(nav: Nav): string {
   if (nav.kind === 'root') return 'antishare.sort:root:.'
-  if (nav.kind === 'local') return `antishare.sort:local:${nav.path || '.'}`
-  return `antishare.sort:${nav.peer.baseUrl}:${nav.path || '.'}`
+  return `antishare.sort:group:${nav.groupId}:${nav.path || '.'}`
 }
 
 function isSortKey(v: unknown): v is SortKey {
@@ -137,15 +132,12 @@ function compareEntries(a: DirEntry, b: DirEntry, key: SortKey, dir: SortDir): n
   return dir === 'asc' ? cmp : -cmp
 }
 
-interface HomeProps {
-  status: ShareStatus | null
-  settingsOpen?: boolean
-  onOpenSettings: () => void
-}
-
-function isFresh(peer: Peer): boolean {
-  if (!peer.lastSeen) return true
-  return Date.now() - peer.lastSeen < PEER_STALE_MS
+type JoinTarget = {
+  id: string
+  name: string
+  members: string[]
+  folder?: string | null
+  locked?: boolean
 }
 
 function joinPath(parent: string, name: string): string {
@@ -187,27 +179,23 @@ function readViewMode(): FinderViewMode {
   }
 }
 
-export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps): ReactElement {
+export function Home(): ReactElement {
   const api = getApi()
-  const { refreshStatus } = useShareStatus()
+  const { snapshot, refresh: refreshGroups } = useGroups()
   const [nav, setNav] = useState<Nav>({ kind: 'root' })
   const [contentScrolled, setContentScrolled] = useState(false)
-  const [shareStarting, setShareStarting] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [createFolder, setCreateFolder] = useState<string | null>(null)
+  const [joinTarget, setJoinTarget] = useState<JoinTarget | null>(null)
   const [theme, setTheme] = useState<Theme>(() =>
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
   )
   const [viewMode, setViewMode] = useState<FinderViewMode>(readViewMode)
   const [sort, setSort] = useState<SortPref>(() => readSortPref({ kind: 'root' }))
-  const [peers, setPeers] = useState<Peer[]>([])
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [listFailed, setListFailed] = useState(false)
-  const [errorRaw, setErrorRaw] = useState<string | null>(null)
-  const [listUnreachable, setListUnreachable] = useState(false)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [pendingPeer, setPendingPeer] = useState<Peer | null>(null)
-  const [tokenDraft, setTokenDraft] = useState('')
-  const [tokenError, setTokenError] = useState<string | null>(null)
   const [busyFile, setBusyFile] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [importXfer, setImportXfer] = useState<{ copied: number; total: number } | null>(null)
@@ -224,41 +212,41 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   const silentFailStreak = useRef(0)
   /** True while listing fails — used for unstable-connection UX; poll stays at 2s. */
   const connectionUnstable = useRef(false)
-  const tokenInputRef = useRef<HTMLInputElement>(null)
   const dropDepthRef = useRef(0)
   const renameCommitLock = useRef(false)
   const activeNavIdRef = useRef('')
-  /** Session-only peer tokens keyed by baseUrl — never persist to disk. */
-  const peerTokenCache = useRef<Map<string, string>>(new Map())
-  /** baseUrl already prompted for invalid token this episode — avoid poll wiping draft. */
-  const tokenPromptedForRef = useRef<string | null>(null)
+  /** Groups this device just left on purpose: their disappearance needs no notice. */
+  const leftOnPurpose = useRef(new Set<string>())
+  const knownGroups = useRef<Map<string, string> | null>(null)
 
-  const running = status?.running ?? false
-  const localLanHosts = useMemo(() => lanHostsFromShareUrls(status?.urls), [status?.urls])
+  const groups = useMemo(() => snapshot?.groups ?? [], [snapshot])
+  const discovered = useMemo(() => snapshot?.discovered ?? [], [snapshot])
+  const currentGroup: GroupView | null =
+    nav.kind === 'group' ? (groups.find((g) => g.id === nav.groupId) ?? null) : null
+  const groupId = nav.kind === 'group' ? nav.groupId : undefined
+  const groupReady = currentGroup?.state === 'ok'
 
+  // A group vanishing without our action was deleted (or renamed away) by another member.
   useEffect(() => {
-    if (!pendingPeer) return
-    const id = window.setTimeout(() => {
-      requestAnimationFrame(() => {
-        const el = tokenInputRef.current
-        if (!el) return
-        el.focus()
-        el.select()
-      })
-    }, 0)
-    return () => window.clearTimeout(id)
-  }, [pendingPeer])
-
-  useEffect(() => {
-    try {
-      if (sessionStorage.getItem('antishare.openLocal') !== '1') return
-      if (!status?.running) return
-      sessionStorage.removeItem('antishare.openLocal')
-      setNav({ kind: 'local', path: '' })
-    } catch {
-      /* ignore */
+    if (!snapshot) return
+    const next = new Map(snapshot.groups.map((g) => [g.id, g.name]))
+    const prev = knownGroups.current
+    knownGroups.current = next
+    if (!prev) return
+    for (const [id, name] of prev) {
+      if (next.has(id)) continue
+      if (leftOnPurpose.current.delete(id)) continue
+      toast.warning(`«${name}» fue eliminado por otro miembro. Tus archivos siguen en tu carpeta.`)
     }
-  }, [status?.running])
+  }, [snapshot])
+
+  // Leave the explorer when its group is gone.
+  useEffect(() => {
+    if (nav.kind === 'group' && snapshot && !currentGroup) {
+      setNav({ kind: 'root' })
+      setSettingsOpen(false)
+    }
+  }, [nav, snapshot, currentGroup])
 
   useEffect(() => {
     let importClearTimer: number | undefined
@@ -359,57 +347,14 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     })
   }
 
-  useEffect(() => {
-    let alive = true
-    async function loadPeers(): Promise<void> {
-      try {
-        const list = await api.listPeers()
-        if (alive) setPeers(list)
-      } catch {
-        /* ignore root peer errors; onUpdate will fill */
-      }
-    }
-    void loadPeers()
-    const unsub = api.onPeersUpdate((next) => {
-      if (!alive) return
-      setPeers(next)
-      // Keep open explorer pointed at the live announce (IP can change on Wi‑Fi renew).
-      setNav((prev) => {
-        if (prev.kind !== 'peer') return prev
-        const match = next.find(
-          (p) =>
-            p.baseUrl === prev.peer.baseUrl ||
-            (p.port === prev.peer.port &&
-              (p.name === prev.peer.name || p.host === prev.peer.host))
-        )
-        if (!match) return prev
-        if (
-          match.baseUrl === prev.peer.baseUrl &&
-          match.host === prev.peer.host &&
-          match.name === prev.peer.name &&
-          match.tokenRequired === prev.peer.tokenRequired
-        ) {
-          return prev
-        }
-        return { ...prev, peer: match }
-      })
-    })
-    return () => {
-      alive = false
-      unsub()
-    }
-  }, [api])
-
   const loadContents = useCallback(
     async (opts?: { silent?: boolean }): Promise<boolean> => {
       const myNavId = navId(nav)
-      if (nav.kind === 'root') {
+      if (nav.kind === 'root' || !groupReady) {
         if (activeNavIdRef.current !== myNavId) return false
         setEntries([])
         setLoading(false)
         setListFailed(false)
-        setErrorRaw(null)
-        setListUnreachable(false)
         hasLoadedOnce.current = true
         silentFailStreak.current = 0
         connectionUnstable.current = false
@@ -420,62 +365,19 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
         if (activeNavIdRef.current !== myNavId) return false
         setLoading(true)
         setListFailed(false)
-        setErrorRaw(null)
-        setListUnreachable(false)
       }
-      let result: { ok: boolean; entries?: DirEntry[]; error?: string }
-      if (nav.kind === 'local') {
-        if (!running) {
-          if (activeNavIdRef.current !== myNavId) return false
-          setEntries([])
-          setListFailed(true)
-          setErrorRaw(null)
-          setListUnreachable(false)
-          setLoading(false)
-          connectionUnstable.current = true
-          if (!silent) toast.error('Todavía no estás compartiendo.')
-          return false
-        }
-        result = await api.listLocal({ path: nav.path || undefined })
-      } else {
-        result = await api.remoteList({
-          baseUrl: nav.peer.baseUrl,
-          path: nav.path || undefined,
-          token: nav.token
-        })
-      }
+      const result = await api.listLocal({ groupId: nav.groupId, path: nav.path || undefined })
       if (!result.ok) {
         if (activeNavIdRef.current !== myNavId) return false
         connectionUnstable.current = true
-        const unreachable = nav.kind === 'peer' && isNetworkReachabilityError(result.error)
-        if (
-          nav.kind === 'peer' &&
-          /401|unauthorized/i.test(result.error ?? '') &&
-          tokenPromptedForRef.current !== nav.peer.baseUrl
-        ) {
-          tokenPromptedForRef.current = nav.peer.baseUrl
-          peerTokenCache.current.delete(nav.peer.baseUrl)
-          setPendingPeer(nav.peer)
-          setTokenDraft('')
-          setTokenError('La clave guardada ya no es válida. Ingrésala de nuevo.')
-        }
         if (!silent) {
           silentFailStreak.current = 0
           setEntries([])
-          setErrorRaw(result.error ?? null)
-          setListUnreachable(unreachable)
           setListFailed(true)
-          if (!unreachable) {
-            toast.error(mapIpcError(result.error, 'No se pudo listar el contenido.'))
-          }
+          toast.error(mapIpcError(result.error, 'No se pudo listar el contenido.'))
         } else {
-          // Transient LAN / keep-alive races: keep last listing; surface panel after streaks.
           silentFailStreak.current += 1
-          if (silentFailStreak.current >= 2) {
-            setErrorRaw(result.error ?? null)
-            setListUnreachable(unreachable)
-            setListFailed(true)
-          }
+          if (silentFailStreak.current >= 2) setListFailed(true)
         }
         if (!silent) setLoading(false)
         return false
@@ -483,15 +385,13 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
       if (activeNavIdRef.current !== myNavId) return false
       setEntries(result.entries ?? [])
       setListFailed(false)
-      setErrorRaw(null)
-      setListUnreachable(false)
       silentFailStreak.current = 0
       connectionUnstable.current = false
       hasLoadedOnce.current = true
       if (!silent) setLoading(false)
       return true
     },
-    [api, nav, running]
+    [api, nav, groupReady]
   )
 
   useEffect(() => {
@@ -503,10 +403,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setMenu(null)
     setPendingDelete(null)
     setListFailed(false)
-    setListUnreachable(false)
-    setErrorRaw(null)
     activeNavIdRef.current = navId(nav)
-    tokenPromptedForRef.current = null
 
     if (nav.kind === 'root') {
       void loadContents({ silent: false })
@@ -533,47 +430,22 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   const crumbs = useMemo(() => {
     const items: { label: string; go: () => void }[] = []
-    if (nav.kind === 'local') {
-      items.push({
-        label: 'Mi carpeta',
-        go: () => setNav({ kind: 'local', path: '' })
-      })
-      const parts = nav.path.split('/').filter(Boolean)
-      let acc = ''
-      for (const part of parts) {
-        acc = joinPath(acc, part)
-        const path = acc
-        items.push({
-          label: part,
-          go: () => setNav({ kind: 'local', path })
-        })
-      }
-    }
-    if (nav.kind === 'peer') {
-      const peer = nav.peer
-      const token = nav.token
-      items.push({
-        label: peer.name,
-        go: () => setNav({ kind: 'peer', peer, path: '', token })
-      })
-      const parts = nav.path.split('/').filter(Boolean)
-      let acc = ''
-      for (const part of parts) {
-        acc = joinPath(acc, part)
-        const path = acc
-        items.push({
-          label: part,
-          go: () => setNav({ kind: 'peer', peer, path, token })
-        })
-      }
+    if (nav.kind !== 'group') return items
+    const id = nav.groupId
+    items.push({ label: currentGroup?.name ?? 'Grupo', go: () => setNav({ kind: 'group', groupId: id, path: '' }) })
+    let acc = ''
+    for (const part of nav.path.split('/').filter(Boolean)) {
+      acc = joinPath(acc, part)
+      const path = acc
+      items.push({ label: part, go: () => setNav({ kind: 'group', groupId: id, path }) })
     }
     return items
-  }, [nav])
+  }, [nav, currentGroup?.name])
 
   useEffect(() => {
     if (nav.kind === 'root') return
     const onKey = (e: KeyboardEvent): void => {
-      if (renameMode || pendingDelete || pendingPeer || opBusy) return
+      if (renameMode || pendingDelete || joinTarget || createFolder !== null || settingsOpen || opBusy) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       const entry = entries.find((en) => en.path === selectedKey)
@@ -591,59 +463,32 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [nav.kind, renameMode, pendingDelete, pendingPeer, opBusy, entries, selectedKey])
+  }, [nav.kind, renameMode, pendingDelete, joinTarget, createFolder, settingsOpen, opBusy, entries, selectedKey])
 
-  function openLocalRoot(): void {
-    if (!running) {
-      onOpenSettings()
-      return
+  function openGroup(group: GroupView): void {
+    setSelectedKey(null)
+    if (group.state === 'locked') {
+      setJoinTarget({ id: group.id, name: group.name, members: group.members, folder: group.folder, locked: true })
     }
-    setNav({ kind: 'local', path: '' })
+    setNav({ kind: 'group', groupId: group.id, path: '' })
   }
 
-  function selectLocalShare(): void {
-    setSelectedKey('local')
-    openLocalRoot()
+  function askJoin(group: DiscoveredGroup): void {
+    setJoinTarget({ id: group.id, name: group.name, members: group.members })
   }
 
-  function selectPeerShare(peer: Peer): void {
-    handlePeerClick(peer)
+  async function onGroupReady(group: GroupView): Promise<void> {
+    setCreateFolder(null)
+    setJoinTarget(null)
+    await refreshGroups()
+    setNav({ kind: 'group', groupId: group.id, path: '' })
   }
 
-  function openPeer(peer: Peer, token?: string): void {
-    setNav({ kind: 'peer', peer, path: '', token })
-  }
-
-  function handlePeerClick(peer: Peer): void {
-    setSelectedKey(`peer:${peer.baseUrl}`)
-    if (peer.tokenRequired) {
-      const cached = peerTokenCache.current.get(peer.baseUrl)
-      if (cached) {
-        openPeer(peer, cached)
-        return
-      }
-      setPendingPeer(peer)
-      setTokenDraft('')
-      setTokenError(null)
-      return
-    }
-    openPeer(peer)
-  }
-
-  function confirmToken(e: FormEvent): void {
-    e.preventDefault()
-    if (!pendingPeer) return
-    const value = tokenDraft.trim()
-    if (!value) {
-      setTokenError('Ingresa la clave para continuar.')
-      return
-    }
-    const peer = pendingPeer
-    setPendingPeer(null)
-    setTokenDraft('')
-    setTokenError(null)
-    peerTokenCache.current.set(peer.baseUrl, value)
-    openPeer(peer, value)
+  function onLeftGroup(): void {
+    if (groupId) leftOnPurpose.current.add(groupId)
+    setSettingsOpen(false)
+    setNav({ kind: 'root' })
+    void refreshGroups()
   }
 
   function cancelRename(): void {
@@ -684,24 +529,9 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setOpBusy(true)
     const creating = renameMode.kind === 'create'
     try {
-      const result =
-        nav.kind === 'local'
-          ? creating
-            ? await api.mkdirLocal({ path: nav.path || undefined, name })
-            : await api.renameLocal({ path: renameMode.path, newName: name })
-          : creating
-            ? await api.remoteMkdir({
-                baseUrl: nav.peer.baseUrl,
-                path: nav.path || undefined,
-                name,
-                token: nav.token
-              })
-            : await api.remoteRename({
-                baseUrl: nav.peer.baseUrl,
-                path: renameMode.path,
-                newName: name,
-                token: nav.token
-              })
+      const result = creating
+        ? await api.mkdirLocal({ groupId, path: nav.path || undefined, name })
+        : await api.renameLocal({ groupId, path: renameMode.path, newName: name })
       if (!result.ok) {
         renameCommitLock.current = false
         toast.error(
@@ -732,14 +562,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     const entry = pendingDelete
     setOpBusy(true)
     try {
-      const result =
-        nav.kind === 'local'
-          ? await api.removeLocal({ path: entry.path })
-          : await api.remoteRemove({
-              baseUrl: nav.peer.baseUrl,
-              path: entry.path,
-              token: nav.token
-            })
+      const result = await api.removeLocal({ groupId, path: entry.path })
       if (!result.ok) {
         toast.error(mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`))
         return
@@ -770,54 +593,15 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   async function openEntry(entry: DirEntry): Promise<void> {
     setSelectedKey(entry.path)
+    if (nav.kind !== 'group') return
     if (entry.isDir) {
-      const nextPath = entry.path || joinPath(nav.kind === 'root' ? '' : nav.path, entry.name)
-      if (nav.kind === 'local') setNav({ kind: 'local', path: nextPath })
-      if (nav.kind === 'peer') setNav({ kind: 'peer', peer: nav.peer, path: nextPath, token: nav.token })
+      setNav({ kind: 'group', groupId: nav.groupId, path: entry.path || joinPath(nav.path, entry.name) })
       return
     }
+    // The file already lives in this device's folder: open it in place.
     setBusyFile(entry.path)
-    if (nav.kind === 'local') {
-      const baseUrl = status?.urls?.[0]?.replace(/\/+$/, '')
-      if (!baseUrl) {
-        setBusyFile(null)
-        return
-      }
-      const settings = await api.getSettings()
-      const result = await api.remoteDownload({
-        baseUrl,
-        path: entry.path,
-        token: settings.token
-      })
-      if (!result.ok) {
-        toast.error(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
-      } else if (result.destPath) {
-        const destPath = result.destPath
-        toast.success('Guardado en Descargas', {
-          action: {
-            label: 'Mostrar',
-            onClick: () => void revealDownload(destPath)
-          }
-        })
-      }
-    } else if (nav.kind === 'peer') {
-      const result = await api.remoteDownload({
-        baseUrl: nav.peer.baseUrl,
-        path: entry.path,
-        token: nav.token
-      })
-      if (!result.ok) {
-        toast.error(mapIpcError(result.error, `No se pudo descargar «${entry.name}».`))
-      } else if (result.destPath) {
-        const destPath = result.destPath
-        toast.success('Guardado en Descargas', {
-          action: {
-            label: 'Mostrar',
-            onClick: () => void revealDownload(destPath)
-          }
-        })
-      }
-    }
+    const result = await api.openFile({ groupId: nav.groupId, path: entry.path })
+    if (!result.ok) toast.error(mapIpcError(result.error, `No se pudo abrir «${entry.name}».`))
     setBusyFile(null)
   }
 
@@ -838,19 +622,9 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     setOpBusy(true)
     try {
       const result = await api.exportItems({
+        groupId,
         destDir,
-        items:
-          nav.kind === 'local'
-            ? [{ kind: 'local', path: entry.path, isDir: entry.isDir }]
-            : [
-                {
-                  kind: 'remote',
-                  path: entry.path,
-                  isDir: entry.isDir,
-                  baseUrl: nav.peer.baseUrl,
-                  token: nav.token
-                }
-              ]
+        items: [{ path: entry.path, isDir: entry.isDir }]
       })
       if (!result.ok) {
         toast.error(mapIpcError(result.error, `No se pudo guardar «${entry.name}».`))
@@ -926,12 +700,12 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }
 
   function isOsSameFolderDrop(dt: DataTransfer): boolean {
-    return nav.kind === 'local' && isOsDropAlreadyInFolder(dt, status?.folder, nav.path || '')
+    return nav.kind === 'group' && isOsDropAlreadyInFolder(dt, currentGroup?.folder, nav.path || '')
   }
 
   /** Whether dest folder can accept the current drag (internal move or OS import). */
   function folderDropEffect(dest: DirEntry, e: DragEvent): 'move' | 'copy' | null {
-    if (!dest.isDir || nav.kind === 'root' || importing || opBusy) return null
+    if (!dest.isDir || nav.kind === 'root' || !groupReady || importing || opBusy) return null
 
     if (isInternalFileDragActive()) {
       const srcPath = getInternalDragSourcePath()
@@ -946,7 +720,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     }
 
     if (!isOsFileDrag(e.dataTransfer)) return null
-    if (nav.kind === 'local' && isOsDropAlreadyInFolder(e.dataTransfer, status?.folder, dest.path)) {
+    if (isOsDropAlreadyInFolder(e.dataTransfer, currentGroup?.folder, dest.path)) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'none'
       return null
@@ -984,34 +758,16 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     }
     setImporting(true)
     try {
-      if (nav.kind === 'local') {
-        const result = await api.importLocal({ sources, destPath: destPath || undefined })
-        if (!result.ok) {
-          toast.error(mapIpcError(result.error, 'No se pudo importar.'))
-          return
-        }
-        toast.success(
-          sources.length === 1
-            ? `Importado en «${destName}»`
-            : `${sources.length} importados en «${destName}»`
-        )
-      } else {
-        const result = await api.importRemote({
-          baseUrl: nav.peer.baseUrl,
-          sources,
-          destPath: destPath || undefined,
-          token: nav.token
-        })
-        if (!result.ok) {
-          toast.error(mapIpcError(result.error, 'No se pudo subir al peer.'))
-          return
-        }
-        toast.success(
-          sources.length === 1
-            ? `Subido a «${destName}»`
-            : `${sources.length} subidos a «${destName}»`
-        )
+      const result = await api.importLocal({ groupId, sources, destPath: destPath || undefined })
+      if (!result.ok) {
+        toast.error(mapIpcError(result.error, 'No se pudo importar.'))
+        return
       }
+      toast.success(
+        sources.length === 1
+          ? `Importado en «${destName}»`
+          : `${sources.length} importados en «${destName}»`
+      )
       await loadContents({ silent: true })
     } catch (err) {
       toast.error(
@@ -1029,15 +785,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     const srcName = srcPath.includes('/') ? srcPath.slice(srcPath.lastIndexOf('/') + 1) : srcPath
     setOpBusy(true)
     try {
-      const result =
-        nav.kind === 'local'
-          ? await api.moveLocal({ path: srcPath, destPath: dest.path })
-          : await api.remoteMove({
-              baseUrl: nav.peer.baseUrl,
-              path: srcPath,
-              destPath: dest.path,
-              token: nav.token
-            })
+      const result = await api.moveLocal({ groupId, path: srcPath, destPath: dest.path })
       if (!result.ok) {
         toast.error(mapIpcError(result.error, `No se pudo mover «${srcName}».`))
         return
@@ -1080,7 +828,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }
 
   function acceptOsDrop(e: DragEvent): boolean {
-    if (nav.kind === 'root') return false
+    if (nav.kind === 'root' || !groupReady) return false
     // AntiShare→AntiShare: never allow import; same-folder shows not-allowed cursor.
     if (isInternalFileDragActive()) {
       rejectDropVisual(e)
@@ -1121,26 +869,12 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     }
     setImporting(true)
     try {
-      if (nav.kind === 'local') {
-        const result = await api.importLocal({ sources, destPath: nav.path || undefined })
-        if (!result.ok) {
-          toast.error(mapIpcError(result.error, 'No se pudo importar.'))
-          return
-        }
-        toast.success(sources.length === 1 ? 'Importado' : `${sources.length} importados`)
-      } else {
-        const result = await api.importRemote({
-          baseUrl: nav.peer.baseUrl,
-          sources,
-          destPath: nav.path || undefined,
-          token: nav.token
-        })
-        if (!result.ok) {
-          toast.error(mapIpcError(result.error, 'No se pudo subir al peer.'))
-          return
-        }
-        toast.success(sources.length === 1 ? 'Subido' : `${sources.length} subidos`)
+      const result = await api.importLocal({ groupId, sources, destPath: nav.path || undefined })
+      if (!result.ok) {
+        toast.error(mapIpcError(result.error, 'No se pudo importar.'))
+        return
       }
+      toast.success(sources.length === 1 ? 'Importado' : `${sources.length} importados`)
       await loadContents({ silent: true })
     } catch (err) {
       toast.error(
@@ -1178,35 +912,8 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
     void importOsDrop(e.dataTransfer)
   }
 
-  async function startShareFromFolder(folder: string): Promise<void> {
-    setShareStarting(true)
-    try {
-      const result = await api.startShare({ folder })
-      if (!result.ok) {
-        toast.error(mapIpcError(result.error, 'No se pudo iniciar el share.'))
-        return
-      }
-      await refreshStatus()
-      toast.success('Compartiendo')
-      setNav({ kind: 'local', path: '' })
-    } catch (err) {
-      toast.error(
-        mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo iniciar el share.')
-      )
-    } finally {
-      setShareStarting(false)
-    }
-  }
-
-  async function quickSharePick(): Promise<void> {
-    if (shareStarting || running) return
-    const path = await api.selectFolder()
-    if (!path) return
-    await startShareFromFolder(path)
-  }
-
   function acceptWelcomeDrop(e: DragEvent): boolean {
-    if (nav.kind !== 'root' || running || shareStarting) return false
+    if (nav.kind !== 'root') return false
     if (isInternalFileDragActive()) return false
     if (!isOsFileDrag(e.dataTransfer)) return false
     e.preventDefault()
@@ -1231,18 +938,18 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }
 
   function handleWelcomeDrop(e: DragEvent): void {
-    if (nav.kind !== 'root' || running) return
+    if (nav.kind !== 'root') return
     e.preventDefault()
     dropDepthRef.current = 0
     setDropActive(false)
     if (isInternalFileDragActive()) return
-    if (!isOsFileDrag(e.dataTransfer) || shareStarting) return
+    if (!isOsFileDrag(e.dataTransfer)) return
     const folder = osDropSingleDirectoryPath(e.dataTransfer)
     if (!folder) {
       toast.error('Suelta una sola carpeta.')
       return
     }
-    void startShareFromFolder(folder)
+    setCreateFolder(folder)
   }
 
   useEffect(() => {
@@ -1250,9 +957,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }, [nav.kind])
 
   const showLoading = loading && !hasLoadedOnce.current && nav.kind !== 'root'
-  const localOnline = running
-  const sidebarLocalActive = nav.kind === 'local'
-  const sidebarPeerActive = nav.kind === 'peer' ? nav.peer.baseUrl : null
 
   function renderEmptyFolder(): ReactElement {
     return (
@@ -1285,16 +989,13 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
   }
 
   function renderWelcome(): ReactElement {
-    const canQuickShare = !localOnline
     return (
       <div
-        className={`finder-empty${canQuickShare ? ' finder-drop-target' : ''}${
-          canQuickShare && dropActive ? ' active' : ''
-        }`}
-        onDragEnter={canQuickShare ? handleWelcomeDragEnter : undefined}
-        onDragOver={canQuickShare ? handleWelcomeDragOver : undefined}
-        onDragLeave={canQuickShare ? handleWelcomeDragLeave : undefined}
-        onDrop={canQuickShare ? handleWelcomeDrop : undefined}
+        className={`finder-empty finder-drop-target${dropActive ? ' active' : ''}`}
+        onDragEnter={handleWelcomeDragEnter}
+        onDragOver={handleWelcomeDragOver}
+        onDragLeave={handleWelcomeDragLeave}
+        onDrop={handleWelcomeDrop}
       >
         <div className="finder-empty-card">
           <span className="finder-empty-icon" aria-hidden="true">
@@ -1307,33 +1008,64 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
             </svg>
           </span>
           <h2 className="finder-empty-title">
-            {localOnline ? 'Elige una carpeta' : 'Comparte una carpeta'}
+            {groups.length > 0 ? 'Elige un grupo' : 'Una carpeta en todos tus equipos'}
           </h2>
           <p className="finder-empty-sub">
-            {localOnline
-              ? 'Abre Mi carpeta o un peer desde la barra lateral para explorar archivos.'
-              : 'Elige o arrastra una carpeta para empezar a compartir en la red local.'}
+            {groups.length > 0
+              ? 'Abre un grupo en la barra lateral para ver sus archivos.'
+              : 'Crea un grupo con una carpeta y una clave, o únete a uno de la red. Puedes arrastrar una carpeta aquí.'}
           </p>
-          {localOnline ? (
-            <Button variant="primary" size="sm" onClick={selectLocalShare}>
-              Abrir Mi carpeta
-            </Button>
-          ) : (
-            <>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void quickSharePick()}
-                loading={shareStarting}
-                disabled={shareStarting}
-              >
-                Compartir una carpeta…
-              </Button>
-              <button type="button" className="finder-empty-link" onClick={onOpenSettings}>
-                Opciones avanzadas (clave, inicio automático)
-              </button>
-            </>
-          )}
+          <Button variant="primary" size="sm" leftIcon={<Plus size={14} aria-hidden="true" />} onClick={() => setCreateFolder('')}>
+            Crear grupo
+          </Button>
+          {discovered.length > 0 ? (
+            <ul className="group-discover-list" aria-label="Grupos en la red">
+              {discovered.map((g) => (
+                <li key={g.id}>
+                  <button type="button" className="group-discover-card" onClick={() => askJoin(g)}>
+                    <span className="group-discover-icon" aria-hidden="true">
+                      <Users size={ICON_SIDE} strokeWidth={ICON_STROKE} />
+                    </span>
+                    <span className="group-discover-text">
+                      <span className="group-discover-name">{g.name}</span>
+                      <span className="group-discover-meta">{g.members.join(', ')}</span>
+                    </span>
+                    <span className="group-discover-action">Unirse</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {snapshot?.serverError ? (
+            <p className="form-error" role="alert">
+              {snapshot.serverError}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderLocked(group: GroupView): ReactElement {
+    return (
+      <div className="finder-empty">
+        <div className="finder-empty-card">
+          <span className="finder-empty-icon group-locked-icon" aria-hidden="true">
+            <Lock size={40} strokeWidth={1.5} />
+          </span>
+          <h2 className="finder-empty-title">La clave cambió</h2>
+          <p className="finder-empty-sub">
+            Otro miembro cambió la clave de «{group.name}». La sincronización está en pausa hasta que la escribas.
+          </p>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() =>
+              setJoinTarget({ id: group.id, name: group.name, members: group.members, folder: group.folder, locked: true })
+            }
+          >
+            Escribir clave nueva
+          </Button>
         </div>
       </div>
     )
@@ -1346,9 +1078,9 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
 
   return (
     <section
-      className={`finder${importing || shareStarting || opBusy ? ' finder-drag-busy' : ''}`}
-      aria-label="Compartidos"
-      aria-busy={Boolean(importing || shareStarting || opBusy)}
+      className={`finder${importing || opBusy ? ' finder-drag-busy' : ''}`}
+      aria-label="Grupos"
+      aria-busy={Boolean(importing || opBusy)}
       tabIndex={-1}
     >
       <header className={`finder-toolbar${contentScrolled ? ' scrolled' : ''}`}>
@@ -1361,7 +1093,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
         </div>
 
         <div className="finder-toolbar-view-cluster">
-          {nav.kind !== 'root' ? (
+          {nav.kind !== 'root' && groupReady ? (
             <div className="finder-toolbar-ops" role="toolbar" aria-label="Carpeta">
               <button
                 type="button"
@@ -1460,11 +1192,11 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           <button
             type="button"
             className="finder-tool-btn"
-            aria-label="Configurar"
-            title="Configurar"
+            aria-label={currentGroup ? 'Ajustes del grupo' : 'Red local'}
+            title={currentGroup ? 'Ajustes del grupo' : 'Red local'}
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
-            onClick={onOpenSettings}
+            onClick={() => setSettingsOpen(true)}
           >
             <Settings size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
           </button>
@@ -1472,46 +1204,72 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
       </header>
 
       <div className="finder-body">
-        <aside className="finder-sidebar" aria-label="Ubicaciones">
-          <div className="finder-sidebar-label">Compartidos</div>
-          <button
-            type="button"
-            className={`finder-side-item${sidebarLocalActive ? ' active' : ''}`}
-            onClick={selectLocalShare}
-          >
-            <span className="finder-side-icon" aria-hidden="true">
-              <Folder size={ICON_SIDE} strokeWidth={ICON_STROKE} />
-            </span>
-            <span className="finder-side-name">Mi carpeta</span>
-            <span className="finder-side-meta">
-              {status?.tokenRequired ? <LockBadge /> : null}
-              <span className={`finder-side-dot${localOnline ? ' on' : ''}`} aria-hidden="true" />
-            </span>
-          </button>
-          <div className="finder-sidebar-label">En la red</div>
-          {peers.map((peer) => {
-            const online = isFresh(peer)
+        <aside className="finder-sidebar" aria-label="Grupos">
+          <div className="finder-sidebar-head">
+            <span className="finder-sidebar-label">Mis grupos</span>
+            <button
+              type="button"
+              className="finder-side-add"
+              aria-label="Crear grupo"
+              title="Crear grupo"
+              onClick={() => setCreateFolder('')}
+            >
+              <Plus size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            </button>
+          </div>
+          {groups.map((g) => {
+            const sum = syncSummary(g)
+            const active = nav.kind === 'group' && nav.groupId === g.id
             return (
               <button
-                key={peer.baseUrl}
+                key={g.id}
                 type="button"
-                className={`finder-side-item${sidebarPeerActive === peer.baseUrl ? ' active' : ''}`}
-                onClick={() => selectPeerShare(peer)}
-                title={`${peer.host}:${peer.port}`}
+                className={`finder-side-item${active ? ' active' : ''}`}
+                aria-current={active ? 'page' : undefined}
+                onClick={() => openGroup(g)}
+                title={`${g.name} · ${sum.label}`}
               >
                 <span className="finder-side-icon" aria-hidden="true">
-                  <Monitor size={ICON_SIDE} strokeWidth={ICON_STROKE} />
+                  <FolderSync size={ICON_SIDE} strokeWidth={ICON_STROKE} />
                 </span>
-                <span className="finder-side-name">{peer.name}</span>
+                <span className="finder-side-name">{g.name}</span>
                 <span className="finder-side-meta">
-                  {peer.tokenRequired ? <LockBadge /> : null}
-                  <span className={`finder-side-dot${online ? ' on' : ''}`} aria-hidden="true" />
+                  {g.members.length > 0 ? (
+                    <span className="finder-side-count" aria-label={`${g.members.length} conectados`}>
+                      {g.members.length}
+                    </span>
+                  ) : null}
+                  {g.state === 'locked' ? (
+                    <Lock size={12} strokeWidth={ICON_STROKE} aria-label="Clave cambiada" />
+                  ) : (
+                    <span className={`finder-side-dot sync-${sum.tone}`} aria-hidden="true" />
+                  )}
                 </span>
               </button>
             )
           })}
-          {peers.length === 0 ? (
-            <p className="finder-side-hint">Los peers de la red aparecen aquí.</p>
+          {groups.length === 0 ? <p className="finder-side-hint">Crea tu primer grupo con el +.</p> : null}
+
+          <div className="finder-sidebar-label">En la red</div>
+          {discovered.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              className="finder-side-item finder-side-item-discover"
+              onClick={() => askJoin(g)}
+              title={`Unirse a ${g.name} · ${g.members.join(', ')}`}
+            >
+              <span className="finder-side-icon" aria-hidden="true">
+                <Users size={ICON_SIDE} strokeWidth={ICON_STROKE} />
+              </span>
+              <span className="finder-side-name">{g.name}</span>
+              <span className="finder-side-meta">
+                <span className="finder-side-join">Unirse</span>
+              </span>
+            </button>
+          ))}
+          {discovered.length === 0 ? (
+            <p className="finder-side-hint">Los grupos de otros equipos aparecen aquí.</p>
           ) : null}
         </aside>
 
@@ -1522,7 +1280,9 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
           >
             {nav.kind === 'root' && renderWelcome()}
 
-            {nav.kind !== 'root' && (
+            {currentGroup?.state === 'locked' && renderLocked(currentGroup)}
+
+            {nav.kind !== 'root' && groupReady && (
               <div
                 className={`finder-drop-target${dropActive ? ' active' : ''}`}
                 onDragEnter={handleOsDragEnter}
@@ -1667,17 +1427,6 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
               </div>
             )}
 
-            {listUnreachable && nav.kind === 'peer' ? (
-              <PeerReachabilityAlert
-                host={nav.peer.host}
-                baseUrl={nav.peer.baseUrl}
-                hosts={nav.peer.hosts}
-                localHosts={localLanHosts}
-                detail={errorRaw}
-                peerName={nav.peer.name}
-                onRetry={() => loadContents({ silent: false })}
-              />
-            ) : null}
           </div>
         </div>
       </div>
@@ -1701,7 +1450,7 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
               <span className="finder-crumb-icon">
                 <FolderIcon size="sm" />
               </span>
-              Compartidos
+              Grupos
             </span>
           ) : (
             crumbs.map((c, i) => (
@@ -1721,16 +1470,15 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
             ))
           )}
         </nav>
-        <span
-          className={`finder-share-state${running ? ' on' : ''}`}
-          role="status"
-          aria-live="polite"
-          aria-label={running ? 'Compartiendo' : 'Sin compartir'}
-          title={running ? 'Compartiendo' : 'Sin compartir'}
-        >
-          <Radio size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-          <span className={`finder-share-dot${running ? ' on' : ''}`} aria-hidden="true" />
-        </span>
+        {currentGroup ? (
+          <span className="finder-sync-state" role="status" aria-live="polite">
+            <span className={`finder-side-dot sync-${syncSummary(currentGroup).tone}`} aria-hidden="true" />
+            {syncSummary(currentGroup).label}
+            {currentGroup.members.length > 0
+              ? ` · ${currentGroup.members.length} ${currentGroup.members.length === 1 ? 'equipo' : 'equipos'}`
+              : ' · solo este equipo'}
+          </span>
+        ) : null}
       </footer>
 
       <ContextMenu
@@ -1790,34 +1538,28 @@ export function Home({ status, settingsOpen = false, onOpenSettings }: HomeProps
         </p>
       </Modal>
 
-      <Modal
-        open={Boolean(pendingPeer)}
-        bare
-        onClose={() => {
-          setPendingPeer(null)
-          setTokenDraft('')
-          setTokenError(null)
-        }}
+      <CreateGroupModal
+        open={createFolder !== null}
+        initialFolder={createFolder ?? undefined}
+        onClose={() => setCreateFolder(null)}
+        onCreated={(g) => void onGroupReady(g)}
+      />
+
+      <JoinGroupModal
+        target={joinTarget}
+        onClose={() => setJoinTarget(null)}
+        onJoined={(g) => void onGroupReady(g)}
+      />
+
+      <SidePanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        title={currentGroup ? currentGroup.name : 'Red local'}
         size="sm"
+        side="right"
       >
-        <form id="peer-token-form" className="form-grid" onSubmit={confirmToken}>
-          <Input
-            ref={tokenInputRef}
-            id="peer-token"
-            type="password"
-            autoComplete="off"
-            aria-label="Clave"
-            placeholder="Clave"
-            value={tokenDraft}
-            onChange={(e) => setTokenDraft(e.target.value)}
-          />
-          {tokenError ? (
-            <p className="muted" role="alert" style={{ margin: 0 }}>
-              {tokenError}
-            </p>
-          ) : null}
-        </form>
-      </Modal>
+        {currentGroup ? <GroupPanel group={currentGroup} onLeft={onLeftGroup} /> : <NetworkPanel />}
+      </SidePanel>
     </section>
   )
 }

@@ -17,72 +17,102 @@ export interface Peer {
   baseUrl: string
   /** Alternate LAN IPv4s for the same peer (try if primary host fails). */
   hosts?: string[]
-  /** True when added via peers:addManual (not pruned by UDP stale timeout). */
-  manual?: boolean
+  /** Groups this peer is a member of (from its UDP announcement). */
+  groups?: AnnouncedGroup[]
 }
 
-export interface PeerAddManualRequest {
-  host: string
-  port: number
-  tokenRequired?: boolean
-  /** Optional token used only to probe the peer. */
-  token?: string
+/** Group as seen in a UDP announcement (never carries secrets). */
+export interface AnnouncedGroup {
+  id: string
+  name: string
+  /** Tombstone: a member deleted the group for everyone; kept so others learn it. */
+  deleted?: boolean
+  /** When the current password was set; a newer value elsewhere means ours is outdated. */
+  keySince: number
 }
 
-export interface PeerAddManualResult {
-  ok: boolean
-  peer?: Peer
-  error?: string
+/** Group settings any member can change; last writer wins by (rev, at, by). */
+export interface GroupMeta {
+  name: string
+  deleted: boolean
+  rev: number
+  at: number
+  /** Device id of the last editor. */
+  by: string
 }
 
-export interface PeerRemoveManualRequest {
-  host: string
-  port: number
+/** GET /g/:groupId/meta payload. */
+export interface GroupMetaResponse {
+  id: string
+  meta: GroupMeta
+  keySince: number
 }
 
-export interface ShareUrls {
-  localhost: string
-  lan: string[]
-}
+export type GroupState = 'ok' | 'noFolder' | 'locked'
 
-export interface ShareStartRequest {
-  folder: string
-  /** Ignored — share always binds DEFAULT_SHARE_PORT (8765). */
-  port?: number
-  token?: string
-  /** Sync space name; machines with the same space keep one shared copy of the folder. */
-  syncSpace?: string
-}
-
-export interface ShareStartResult {
-  ok: boolean
-  urls: string[]
-  port: number
-  error?: string
-}
-
-export interface ShareStopResult {
-  ok: boolean
-  error?: string
-}
-
-export interface ShareStatus {
-  running: boolean
+/** One group this device belongs to, as the renderer sees it. */
+export interface GroupView {
+  id: string
+  name: string
   folder: string | null
-  port: number | null
-  urls: string[]
-  tokenRequired: boolean
-  /** Present while folder sync runs (share started with a sync space). */
+  /** locked = another member changed the password; ask for the new one. */
+  state: GroupState
   sync?: SyncStatus
+  /** Names of members currently announcing the group on the LAN. */
+  members: string[]
 }
 
-/** Persisted local share preferences (Electron userData). Port is fixed at 8765. */
-export interface ShareSettings {
-  folder: string | null
-  token?: string
-  autoStart: boolean
-  /** Empty = no sync (classic per-machine share). */
-  syncSpace?: string
+/** Group announced by other devices that this device has not joined. */
+export interface DiscoveredGroup {
+  id: string
+  name: string
+  members: string[]
+}
+
+export interface GroupsSnapshot {
+  serverRunning: boolean
+  serverError?: string
+  deviceName: string
+  groups: GroupView[]
+  discovered: DiscoveredGroup[]
+}
+
+export interface GroupCreateRequest {
+  name: string
+  password: string
+  folder: string
+}
+
+export interface GroupJoinRequest {
+  id: string
+  password: string
+  folder: string
+}
+
+/** Any member may rename, change the password or move its own folder. */
+export interface GroupUpdateRequest {
+  id: string
+  name?: string
+  password?: string
+  folder?: string
+}
+
+export interface GroupLeaveRequest {
+  id: string
+  /** true = delete the group for every member (their files stay on disk). */
+  forEveryone: boolean
+}
+
+export interface GroupOpResult {
+  ok: boolean
+  error?: string
+  group?: GroupView
+}
+
+/** Open a synced file with the OS default app. */
+export interface FileOpenRequest {
+  groupId: string
+  path: string
 }
 
 /** Per-device edit counters for one file; compared to detect newer vs concurrent edits. */
@@ -102,9 +132,9 @@ export interface SyncEntry {
   modifiedAt: number
 }
 
-/** GET /api/sync/index payload. */
+/** GET /g/:groupId/index payload. */
 export interface SyncIndexResponse {
-  space: string
+  groupId: string
   deviceId: string
   deviceName: string
   entries: SyncEntry[]
@@ -113,9 +143,8 @@ export interface SyncIndexResponse {
 export type SyncState = 'idle' | 'scanning' | 'syncing' | 'error'
 
 export interface SyncStatus {
-  space: string
   state: SyncState
-  /** Peers in the same space reached on the last round. */
+  /** Members of the group reached on the last round. */
   peers: number
   files: number
   /** Conflict copies created since sync started. */
@@ -125,6 +154,8 @@ export interface SyncStatus {
 }
 
 export interface ShareListLocalRequest {
+  /** Group whose local folder is listed. */
+  groupId?: string
   path?: string
 }
 
@@ -150,57 +181,20 @@ export interface NetworkDiagnoseResult {
   summaryEs: string
 }
 
-export interface RemoteListRequest {
-  baseUrl: string
-  path?: string
-  token?: string
-  /** Other LAN base URLs to try after a network failure on baseUrl (not HTTP 4xx). */
-  altBaseUrls?: string[]
-}
-
-export interface RemoteDownloadRequest {
-  baseUrl: string
-  path: string
-  destPath?: string
-  token?: string
-}
-
-export interface RemoteUploadRequest {
-  baseUrl: string
-  path: string
-  filePath: string
-  token?: string
-}
-
-export interface RemoteListResult {
-  ok: boolean
-  entries?: DirEntry[]
-  error?: string
-}
-
-export interface RemoteDownloadResult {
-  ok: boolean
-  destPath?: string
-  error?: string
-}
-
-export interface RemoteUploadResult {
-  ok: boolean
-  error?: string
-}
-
 export interface FsOpResult {
   ok: boolean
   error?: string
 }
 
 export interface FsMkdirRequest {
+  groupId?: string
   /** Relative parent folder inside the share (empty = root). */
   path?: string
   name: string
 }
 
 export interface FsRenameRequest {
+  groupId?: string
   /** Relative path of the file or folder to rename. */
   path: string
   newName: string
@@ -208,6 +202,7 @@ export interface FsRenameRequest {
 
 /** Move a share entry into another relative folder (keeps basename). */
 export interface FsMoveRequest {
+  groupId?: string
   /** Relative path of the file or folder to move. */
   path: string
   /** Relative destination parent folder (empty = share root). */
@@ -215,32 +210,14 @@ export interface FsMoveRequest {
 }
 
 export interface FsRemoveRequest {
+  groupId?: string
   /** Relative path of the file or folder to delete. */
   path: string
 }
 
-export interface RemoteFsMkdirRequest extends FsMkdirRequest {
-  baseUrl: string
-  token?: string
-}
-
-export interface RemoteFsRenameRequest extends FsRenameRequest {
-  baseUrl: string
-  token?: string
-}
-
-export interface RemoteFsMoveRequest extends FsMoveRequest {
-  baseUrl: string
-  token?: string
-}
-
-export interface RemoteFsRemoveRequest extends FsRemoveRequest {
-  baseUrl: string
-  token?: string
-}
-
-/** Drop-import absolute OS paths into the local share (files and folders). */
+/** Drop-import absolute OS paths into a group folder (files and folders). */
 export interface ImportLocalRequest {
+  groupId?: string
   sources: string[]
   /** Relative folder inside the share (current explorer path). */
   destPath?: string
@@ -262,20 +239,6 @@ export interface ImportProgress {
 /** Same shape as ImportProgress; used by files:exportProgress. */
 export type ExportProgress = ImportProgress
 
-/** Drop-import absolute OS paths onto a remote peer share (files and folder trees). */
-export interface RemoteImportRequest {
-  baseUrl: string
-  sources: string[]
-  destPath?: string
-  token?: string
-}
-
-export interface RemoteImportResult {
-  ok: boolean
-  imported?: number
-  error?: string
-}
-
 /** Discovery announcement payload (UDP). */
 export interface PeerAnnouncement {
   name: string
@@ -285,6 +248,7 @@ export interface PeerAnnouncement {
   hosts?: string[]
   port: number
   tokenRequired: boolean
+  groups?: AnnouncedGroup[]
 }
 
 export const DEFAULT_SHARE_PORT = 8765
@@ -297,49 +261,14 @@ export const DISCOVERY_MAGIC = 'antishare-v1'
  */
 export const PEER_STALE_MS = 10_000
 
-/** OS drag-out (Electron startDrag). Files and folders. */
-export interface StartDragLocalRequest {
-  kind: 'local'
-  path: string
-  /** When true, `path` is a directory (also detected from disk if omitted). */
-  isDir?: boolean
-}
-
-export interface StartDragRemoteRequest {
-  kind: 'remote'
-  baseUrl: string
-  path: string
-  token?: string
-  /** When true, materialize the remote directory tree before dragging. */
-  isDir?: boolean
-}
-
-export type StartDragRequest = StartDragLocalRequest | StartDragRemoteRequest
-
-export type PrepareDragRequest = StartDragRequest
-
-export interface PrepareDragResult {
-  ok: boolean
-  /** Absolute file or folder path under the share or DRAG_DIR staging. */
-  filePath?: string
-  error?: string
-}
-
-export interface StartDragResult {
-  ok: boolean
-  error?: string
-}
-
-/** One share entry to copy into a user-chosen OS folder (Save As / Export). */
+/** One group entry to copy into a user-chosen OS folder (Guardar como…). */
 export interface ExportItemSpec {
-  kind: 'local' | 'remote'
   path: string
   isDir: boolean
-  baseUrl?: string
-  token?: string
 }
 
 export interface ExportItemsRequest {
+  groupId?: string
   /** Absolute destination directory chosen via native folder dialog. */
   destDir: string
   items: ExportItemSpec[]
@@ -358,39 +287,25 @@ export interface AntishareApi {
   /** Absolute OS path of a dropped File ('' when it has none, e.g. browser-generated data). */
   getPathForFile: (file: File) => string
   selectFolder: () => Promise<string | null>
-  startShare: (req: ShareStartRequest) => Promise<ShareStartResult>
-  stopShare: () => Promise<ShareStopResult>
-  shareStatus: () => Promise<ShareStatus>
   listLocal: (req?: ShareListLocalRequest) => Promise<ShareListLocalResult>
-  getSettings: () => Promise<ShareSettings>
-  setSettings: (partial: Partial<ShareSettings>) => Promise<ShareSettings>
   diagnoseNetwork: () => Promise<NetworkDiagnoseResult>
-  /** Resolve a local file/folder or materialize a remote one (used by export / tooling). */
-  prepareDrag: (req: PrepareDragRequest) => Promise<PrepareDragResult>
-  listPeers: () => Promise<Peer[]>
-  onPeersUpdate: (cb: (peers: Peer[]) => void) => () => void
+  listGroups: () => Promise<GroupsSnapshot>
+  createGroup: (req: GroupCreateRequest) => Promise<GroupOpResult>
+  joinGroup: (req: GroupJoinRequest) => Promise<GroupOpResult>
+  updateGroup: (req: GroupUpdateRequest) => Promise<GroupOpResult>
+  leaveGroup: (req: GroupLeaveRequest) => Promise<GroupOpResult>
   /** Subscribe to byte progress while importLocal runs. Returns unsubscribe. */
   onImportProgress: (cb: (p: ImportProgress) => void) => () => void
   /** Subscribe to byte progress while exportItems runs. Returns unsubscribe. */
   onExportProgress: (cb: (p: ExportProgress) => void) => () => void
-  addManualPeer: (req: PeerAddManualRequest) => Promise<PeerAddManualResult>
-  removeManualPeer: (req: PeerRemoveManualRequest) => Promise<{ ok: boolean }>
-  remoteList: (req: RemoteListRequest) => Promise<RemoteListResult>
-  remoteDownload: (req: RemoteDownloadRequest) => Promise<RemoteDownloadResult>
-  remoteUpload: (req: RemoteUploadRequest) => Promise<RemoteUploadResult>
-  /** Copy dropped OS files/folders into the local share. */
+  /** Copy dropped OS files/folders into a group folder. */
   importLocal: (req: ImportLocalRequest) => Promise<ImportLocalResult>
-  /** Upload dropped OS files/folders (trees) to a remote peer. */
-  importRemote: (req: RemoteImportRequest) => Promise<RemoteImportResult>
-  /** Copy share item(s) into a user-chosen absolute folder (replaces OS drag-out). */
+  /** Copy group item(s) into a user-chosen absolute folder. */
   exportItems: (req: ExportItemsRequest) => Promise<ExportItemsResult>
   mkdirLocal: (req: FsMkdirRequest) => Promise<FsOpResult>
   renameLocal: (req: FsRenameRequest) => Promise<FsOpResult>
   moveLocal: (req: FsMoveRequest) => Promise<FsOpResult>
   removeLocal: (req: FsRemoveRequest) => Promise<FsOpResult>
-  remoteMkdir: (req: RemoteFsMkdirRequest) => Promise<FsOpResult>
-  remoteRename: (req: RemoteFsRenameRequest) => Promise<FsOpResult>
-  remoteMove: (req: RemoteFsMoveRequest) => Promise<FsOpResult>
-  remoteRemove: (req: RemoteFsRemoveRequest) => Promise<FsOpResult>
+  openFile: (req: FileOpenRequest) => Promise<FsOpResult>
   showItemInFolder: (filePath: string) => Promise<{ ok: boolean; error?: string }>
 }

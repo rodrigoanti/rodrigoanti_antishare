@@ -1,21 +1,18 @@
 /**
- * Peer transport smoke test (no Electron window).
+ * Group server transport + security smoke test (no Electron window).
  * Usage: npx tsx scripts/smoke-transport.ts
  *
- * Asserts the share server binds IPv4 0.0.0.0 and that peerHttp reaches /api/list
- * over the real LAN address with the socket bound to the matching NIC.
+ * Asserts the group server binds IPv4 0.0.0.0, peerHttp reaches it over the real LAN
+ * address with the socket bound to the matching NIC, and /g/ routes only answer
+ * requests signed with the group key (no traversal, no symlink escape).
  */
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AddressInfo } from 'net'
-import { startShareServer } from '../src/main/shareServer'
-import {
-  classifyPeerNetworkError,
-  peerHttp,
-  remoteList,
-  shortNetworkReason
-} from '../src/main/remote'
+import { deriveGroupKey, signGroupRequest, verifyGroupRequest } from '../src/main/groupAuth'
+import { startGroupServer, type GroupServerHooks } from '../src/main/groupServer'
+import { classifyPeerNetworkError, peerHttp } from '../src/main/peerHttp'
 import {
   getLanIfaces,
   getLanIPv4,
@@ -24,26 +21,55 @@ import {
   rankPeerHosts,
   sameSubnetIPv4
 } from '../src/main/net'
-import type { DirEntry } from '../src/shared/types'
 
 const PORT = Number(process.env.ANTISHARE_TEST_PORT || 18765)
-const root = join(tmpdir(), `antishare-transport-${Date.now()}`)
+const base = join(tmpdir(), `antishare-transport-${Date.now()}`)
+const root = join(base, 'grupo')
+const outside = join(base, 'fuera.txt')
+const GROUP = 'abcdef123456'
+const KEY = deriveGroupKey(GROUP, 'clave-1')
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg)
 }
 
-async function listVia(baseUrl: string): Promise<DirEntry[]> {
-  const res = await peerHttp(`${baseUrl}/api/list?path=`, { timeoutMs: 4000 })
-  assert(res.ok, `HTTP ${res.status} en ${baseUrl}/api/list`)
-  return (await res.json()) as DirEntry[]
+const hooks: GroupServerHooks = {
+  hello: () => ({ name: 'smoke', deviceId: 'device-smoke' }),
+  authorize: (id, header, method, path) =>
+    id === GROUP && verifyGroupRequest(header, KEY, method, path) !== null,
+  meta: (id) =>
+    id === GROUP
+      ? { id, meta: { name: 'Smoke', deleted: false, rev: 1, at: 1, by: 'x' }, keySince: 1 }
+      : null,
+  index: () => null,
+  rootFor: (id) => (id === GROUP ? root : null),
+  notify: () => undefined
+}
+
+/** GET signed with `key`, exactly as the sync engine does. */
+async function signedGet(url: string, key: string = KEY): Promise<number> {
+  const u = new URL(url)
+  const res = await peerHttp(url, {
+    headers: signGroupRequest(key, 'device-test', 'GET', `${u.pathname}${u.search}`),
+    timeoutMs: 4000
+  })
+  return res.status
+}
+
+async function hello(baseUrl: string): Promise<void> {
+  const res = await peerHttp(`${baseUrl}/api/hello`, { timeoutMs: 4000 })
+  assert(res.ok, `HTTP ${res.status} en ${baseUrl}/api/hello`)
+  const body = (await res.json()) as { app?: string }
+  assert(body.app === 'antishare', `hello inesperado en ${baseUrl}`)
 }
 
 async function main(): Promise<void> {
   mkdirSync(root, { recursive: true })
   writeFileSync(join(root, 'hello.txt'), 'hello-transport\n')
+  writeFileSync(outside, 'SECRETO\n')
+  symlinkSync(outside, join(root, 'escape'))
 
-  const handle = await startShareServer({ folder: root, port: PORT })
+  const handle = await startGroupServer({ port: PORT, hooks })
   const addr = handle.address as AddressInfo | null
 
   // 1. Server must listen on IPv4 0.0.0.0 (all NICs), not just loopback.
@@ -54,13 +80,10 @@ async function main(): Promise<void> {
   console.log('listen', addr)
 
   try {
+    const local = `http://127.0.0.1:${PORT}`
     // 2. Loopback path.
-    const local = await listVia(`http://127.0.0.1:${PORT}`)
-    assert(
-      local.some((e) => e.name === 'hello.txt'),
-      'loopback /api/list no devolvió hello.txt'
-    )
-    console.log('loopback OK', local.map((e) => e.name))
+    await hello(local)
+    console.log('loopback OK')
 
     // 3. Real LAN path: same route a peer would take, socket bound to that NIC.
     const lanIps = getLanIPv4()
@@ -70,12 +93,8 @@ async function main(): Promise<void> {
       for (const ip of lanIps) {
         const bound = localAddressForPeer(ip)
         assert(bound === ip, `localAddress para ${ip} fue ${bound ?? '(none)'}`)
-        const entries = await listVia(`http://${ip}:${PORT}`)
-        assert(
-          entries.some((e) => e.name === 'hello.txt'),
-          `LAN /api/list en ${ip} no devolvió hello.txt`
-        )
-        console.log(`LAN OK ${ip} (localAddress=${bound})`, entries.map((e) => e.name))
+        await hello(`http://${ip}:${PORT}`)
+        console.log(`LAN OK ${ip} (localAddress=${bound})`)
       }
     }
 
@@ -100,25 +119,30 @@ async function main(): Promise<void> {
     )
     assert(getLanIfaces().every((i) => i.address && i.netmask), 'iface LAN sin address/netmask')
 
-    // 6. remoteList must walk altBaseUrls when the primary refuses the connection.
-    const deadBase = `http://127.0.0.1:${PORT + 1}`
-    const goodBase = `http://127.0.0.1:${PORT}`
-    const viaAlt = await remoteList({ baseUrl: deadBase, altBaseUrls: [goodBase], path: '' })
-    assert(viaAlt.ok, `remoteList no usó el host alternativo: ${viaAlt.ok ? '' : viaAlt.error}`)
-    assert(
-      (viaAlt.entries ?? []).some((e) => e.name === 'hello.txt'),
-      'remoteList por host alternativo no devolvió hello.txt'
-    )
-    console.log('alt host fallback OK')
+    // 6. Group routes: only requests signed with the current key get through.
+    const dl = `${local}/g/${GROUP}/download?path=hello.txt`
+    assert((await peerHttp(dl, { timeoutMs: 4000 })).status === 401, 'sin firma debía dar 401')
+    assert((await signedGet(dl, deriveGroupKey(GROUP, 'otra'))) === 401, 'clave equivocada debía dar 401')
+    assert((await signedGet(dl)) === 200, 'firma correcta debía descargar')
+    assert((await signedGet(`${local}/g/abcdef999999/meta`)) === 401, 'grupo ajeno debía dar 401')
+    const stale = signGroupRequest(KEY, 'device-test', 'GET', `/g/${GROUP}/meta`)
+    const [dev, , sig] = stale['X-Group-Auth'].split('.')
+    const old = await peerHttp(`${local}/g/${GROUP}/meta`, {
+      headers: { 'X-Group-Auth': `${dev}.${Date.now() - 10 * 60_000}.${sig}` },
+      timeoutMs: 4000
+    })
+    assert(old.status === 401, 'una firma vencida debía dar 401')
+    const signedForOther = signGroupRequest(KEY, 'device-test', 'GET', `/g/${GROUP}/meta`)
+    const replay = await peerHttp(dl, { headers: signedForOther, timeoutMs: 4000 })
+    assert(replay.status === 401, 'una firma de otra ruta no debe servir')
+    console.log('group auth OK')
 
-    // 7. Total failure must name every attempt instead of one collapsed message.
-    const failed = await remoteList({ baseUrl: deadBase, altBaseUrls: [deadBase + '0'], path: '' })
-    assert(!failed.ok, 'remoteList debía fallar contra puertos cerrados')
-    const err = failed.error ?? ''
-    assert(err.includes('Intentos:'), `falta el detalle por host: ${err}`)
-    assert(err.includes('ECONNREFUSED'), `falta el código real de red: ${err}`)
-    assert(err.includes(`127.0.0.1:${PORT + 1}`), `falta el host primario en el detalle: ${err}`)
-    console.log('error reporting OK')
+    // 7. Signed requests still cannot leave the group folder.
+    const trav = await signedGet(`${local}/g/${GROUP}/download?path=${encodeURIComponent('../fuera.txt')}`)
+    assert(trav === 403, `traversal debía dar 403, dio ${trav}`)
+    const esc = await signedGet(`${local}/g/${GROUP}/download?path=escape`)
+    assert(esc === 403 || esc === 404, `symlink hacia afuera debía bloquearse, dio ${esc}`)
+    console.log('traversal + symlink escape blocked OK')
 
     // 8. EHOSTUNREACH (no ARP reply) must not be reported as a generic route problem.
     const unreach = Object.assign(new Error('connect EHOSTUNREACH 192.168.100.238:8765'), {
@@ -130,13 +154,12 @@ async function main(): Promise<void> {
       baseUrl: 'http://192.168.100.238:8765'
     })
     assert(msg.includes('EHOSTUNREACH') && msg.includes('ARP'), `clasificación pobre: ${msg}`)
-    assert(shortNetworkReason(unreach) === 'EHOSTUNREACH', 'shortNetworkReason no expone el código')
     console.log('classification OK')
 
     console.log('OK')
   } finally {
     await handle.stop()
-    rmSync(root, { recursive: true, force: true })
+    rmSync(base, { recursive: true, force: true })
   }
 }
 

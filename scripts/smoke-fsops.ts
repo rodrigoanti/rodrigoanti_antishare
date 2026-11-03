@@ -1,17 +1,14 @@
 /**
- * Smoke: mkdir / rename / remove local + remote, with traversal/root rejection.
+ * Smoke: mkdir / rename / remove inside a group folder, with traversal/root rejection.
  * Usage: npx tsx scripts/smoke-fsops.ts
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { mkdirLocal, mkdirInShare, removeLocal, renameLocal } from '../src/main/fsOps'
-import { startShareServer } from '../src/main/shareServer'
-import { remoteMkdir, remoteRemove, remoteRename } from '../src/main/remote'
 
 const stamp = Date.now()
 const root = join(tmpdir(), `antishare-fsops-${stamp}`)
-const PORT = Number(process.env.ANTISHARE_TEST_PORT || 18768)
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg)
@@ -85,49 +82,8 @@ async function main(): Promise<void> {
     const rmTrav = removeLocal(root, { path: '../outside' })
     assert(!rmTrav.ok, 'remove traversal debía fallar')
 
-    const handle = await startShareServer({ folder: root, port: PORT, token: 'tok' })
-    const baseUrl = `http://127.0.0.1:${PORT}`
-    try {
-      const noTok = await remoteMkdir({ baseUrl, name: 'remote-docs' })
-      assert(!noTok.ok, 'mkdir remoto sin token debía fallar')
-
-      const rmk = await remoteMkdir({ baseUrl, token: 'tok', path: '', name: 'remote-docs' })
-      assert(rmk.ok, `remote mkdir: ${rmk.error}`)
-      assert(existsSync(join(root, 'remote-docs')), 'remote-docs')
-
-      const rmk2 = await remoteMkdir({ baseUrl, token: 'tok', path: '', name: 'remote-docs' })
-      assert(!rmk2.ok, 'remote mkdir existente debía fallar')
-      assert(!existsSync(join(root, 'remote-docs (1)')), 'remoto no debe usar (1)')
-
-      const rren = await remoteRename({
-        baseUrl,
-        token: 'tok',
-        path: 'remote-docs',
-        newName: 'peer-folder'
-      })
-      assert(rren.ok, `remote rename: ${rren.error}`)
-      assert(existsSync(join(root, 'peer-folder')), 'peer-folder')
-
-      const rrenRoot = await remoteRename({ baseUrl, token: 'tok', path: '', newName: 'x' })
-      assert(!rrenRoot.ok, 'remote rename root debía fallar')
-
-      const rrm = await remoteRemove({ baseUrl, token: 'tok', path: 'peer-folder' })
-      assert(rrm.ok, `remote remove: ${rrm.error}`)
-      assert(!existsSync(join(root, 'peer-folder')), 'peer-folder borrado')
-
-      const rrmRoot = await remoteRemove({ baseUrl, token: 'tok', path: '' })
-      assert(!rrmRoot.ok, 'remote remove root debía fallar')
-      assert(existsSync(root) && readdirSync(root), 'root intacto tras remote remove')
-
-      const rtrav = await remoteMkdir({ baseUrl, token: 'tok', path: '../x', name: 'y' })
-      assert(!rtrav.ok, `remote mkdir traversal: ${rtrav.error}`)
-
-      console.log('local mkdir/rename/remove + rejects OK')
-      console.log('remote HTTP mkdir/rename/remove + token/root/traversal OK')
-      console.log('OK')
-    } finally {
-      await handle.stop()
-    }
+    console.log('local mkdir/rename/remove + rejects OK')
+    console.log('OK')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

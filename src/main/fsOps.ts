@@ -276,15 +276,3 @@ export async function moveLocal(
 export function removeLocal(root: string | null, req: FsRemoveRequest): FsOpResult {
   return wrap(() => removeInShare(requireRoot(root), req.path))
 }
-
-export function httpStatusForFsError(err: unknown): number {
-  if (err instanceof FsOpError) {
-    if (err.code === 'traversal' || err.code === 'forbidden') return 403
-    if (err.code === 'exists') return 409
-    if (err.code === 'notfound') return 404
-    return 400
-  }
-  const msg = err instanceof Error ? err.message : String(err)
-  if (msg.toLowerCase().includes('traversal')) return 403
-  return 500
-}

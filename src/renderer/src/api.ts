@@ -1,14 +1,10 @@
-import type { AntishareApi, ShareSettings } from '../../shared/types'
+import type { AntishareApi } from '../../shared/types'
 
 const stubError = (action: string): string =>
   `IPC no disponible (${action}). Espera a que el Backend exponga window.antishare.`
 
-const emptySettings = (): ShareSettings => ({
-  folder: null,
-  autoStart: false
-})
-
 function createStub(): AntishareApi {
+  const fail = (action: string) => async () => ({ ok: false, error: stubError(action) })
   return {
     platform: 'unknown',
     getPathForFile: () => '',
@@ -16,44 +12,28 @@ function createStub(): AntishareApi {
       console.warn(stubError('selectFolder'))
       return null
     },
-    startShare: async () => ({ ok: false, urls: [], port: 0, error: stubError('startShare') }),
-    stopShare: async () => ({ ok: false, error: stubError('stopShare') }),
-    shareStatus: async () => ({
-      running: false,
-      folder: null,
-      port: null,
-      urls: [],
-      tokenRequired: false
+    listLocal: fail('listLocal'),
+    diagnoseNetwork: async () => ({ checks: [], summaryEs: stubError('diagnoseNetwork') }),
+    listGroups: async () => ({
+      serverRunning: false,
+      deviceName: '',
+      groups: [],
+      discovered: []
     }),
-    listLocal: async () => ({ ok: false, error: stubError('listLocal') }),
-    getSettings: async () => emptySettings(),
-    setSettings: async (partial) => ({ ...emptySettings(), ...partial }),
-    diagnoseNetwork: async () => ({
-      checks: [],
-      summaryEs: stubError('diagnoseNetwork')
-    }),
-    prepareDrag: async () => ({ ok: false, error: stubError('prepareDrag') }),
-    listPeers: async () => [],
-    onPeersUpdate: () => () => undefined,
+    createGroup: fail('createGroup'),
+    joinGroup: fail('joinGroup'),
+    updateGroup: fail('updateGroup'),
+    leaveGroup: fail('leaveGroup'),
     onImportProgress: () => () => undefined,
     onExportProgress: () => () => undefined,
-    addManualPeer: async () => ({ ok: false, error: stubError('addManualPeer') }),
-    removeManualPeer: async () => ({ ok: false }),
-    remoteList: async () => ({ ok: false, error: stubError('remoteList') }),
-    remoteDownload: async () => ({ ok: false, error: stubError('remoteDownload') }),
-    remoteUpload: async () => ({ ok: false, error: stubError('remoteUpload') }),
     importLocal: async () => ({ ok: false, imported: 0, error: stubError('importLocal') }),
-    importRemote: async () => ({ ok: false, imported: 0, error: stubError('importRemote') }),
     exportItems: async () => ({ ok: false, exported: 0, error: stubError('exportItems') }),
-    mkdirLocal: async () => ({ ok: false, error: stubError('mkdirLocal') }),
-    renameLocal: async () => ({ ok: false, error: stubError('renameLocal') }),
-    moveLocal: async () => ({ ok: false, error: stubError('moveLocal') }),
-    removeLocal: async () => ({ ok: false, error: stubError('removeLocal') }),
-    remoteMkdir: async () => ({ ok: false, error: stubError('remoteMkdir') }),
-    remoteRename: async () => ({ ok: false, error: stubError('remoteRename') }),
-    remoteMove: async () => ({ ok: false, error: stubError('remoteMove') }),
-    remoteRemove: async () => ({ ok: false, error: stubError('remoteRemove') }),
-    showItemInFolder: async () => ({ ok: false, error: stubError('showItemInFolder') })
+    mkdirLocal: fail('mkdirLocal'),
+    renameLocal: fail('renameLocal'),
+    moveLocal: fail('moveLocal'),
+    removeLocal: fail('removeLocal'),
+    openFile: fail('openFile'),
+    showItemInFolder: fail('showItemInFolder')
   }
 }
 
@@ -109,14 +89,7 @@ export function mapIpcError(raw: string | undefined, fallback: string): string {
   if (!raw) return fallback
   const lower = raw.toLowerCase()
   if (lower.includes('401') || lower.includes('unauthorized')) {
-    return 'Token inválido o requerido. Revisa el token e intenta de nuevo.'
-  }
-  if (
-    lower.includes('token') &&
-    !isNetworkReachabilityError(raw) &&
-    !isClearBackendMessage(raw)
-  ) {
-    return 'Token inválido o requerido. Revisa el token e intenta de nuevo.'
+    return 'Clave del grupo incorrecta.'
   }
   if (lower.includes('403') || lower.includes('permission') || lower.includes('eacces')) {
     return 'Sin permiso para acceder a este recurso.'

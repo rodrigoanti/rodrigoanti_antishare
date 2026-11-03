@@ -4,10 +4,8 @@ import {
   DISCOVERY_MAGIC,
   DISCOVERY_PORT,
   type Peer,
-  type PeerAddManualRequest,
-  type PeerAddManualResult,
-  type PeerAnnouncement,
-  type PeerRemoveManualRequest
+  type AnnouncedGroup,
+  type PeerAnnouncement
 } from '../shared/types'
 import {
   getAllLocalIPv4,
@@ -19,8 +17,7 @@ import {
   uniqueHosts,
   type LanIface
 } from './net'
-import { PeerTable, buildPeerRecord } from './peerTable'
-import { classifyPeerNetworkError, peerHttp } from './remote'
+import { PeerTable, buildPeerRecord, sanitizeGroups } from './peerTable'
 
 /** Admin-scoped multicast for LAN AntiShare discovery. */
 export const DISCOVERY_MULTICAST = '239.255.76.67'
@@ -39,6 +36,8 @@ export interface AnnounceState {
    * machine into a phantom peer for everyone else on the LAN.
    */
   isServing?: () => boolean
+  /** Groups to advertise; read on every packet so changes go out within ~2s. */
+  groups?: () => AnnouncedGroup[]
 }
 
 interface SenderEntry {
@@ -119,7 +118,7 @@ export class PeerDiscovery {
     void this.refreshNetwork(true).then(() => this.broadcast())
   }
 
-  /** Stop announcing; keep UDP listen and known peers (manual + discovered). */
+  /** Stop announcing; keep UDP listen and known peers. */
   clearAnnounce(): void {
     if (this.announceTimer) clearInterval(this.announceTimer)
     this.announceTimer = null
@@ -196,56 +195,6 @@ export class PeerDiscovery {
   onUpdate(cb: PeersListener): () => void {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)
-  }
-
-  async addManual(req: PeerAddManualRequest): Promise<PeerAddManualResult> {
-    const host = normalizeHost(req.host)
-    const port = Number(req.port)
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-      return { ok: false, error: 'Invalid host or port' }
-    }
-
-    const baseUrl = `http://${host}:${port}`
-    let tokenRequired = Boolean(req.tokenRequired)
-    let name = `${host}:${port}`
-
-    // Single probe through the same client as remoteList (IPv4 + localAddress). A HEAD
-    // fallback here used to swallow the transport error and report "fetch failed".
-    try {
-      const res = await peerHttp(`${baseUrl}/api/list?path=`, {
-        headers: req.token ? { 'X-Share-Token': req.token } : {},
-        timeoutMs: 4000
-      })
-      if (res.status === 401) {
-        tokenRequired = true
-      } else if (!res.ok) {
-        return { ok: false, error: `El peer respondió HTTP ${res.status} en ${baseUrl}/api/list.` }
-      } else {
-        tokenRequired = Boolean(req.tokenRequired)
-      }
-      name = host
-    } catch (e) {
-      return { ok: false, error: classifyPeerNetworkError(e, { host, port, baseUrl }) }
-    }
-
-    const peer: Peer = {
-      name,
-      host,
-      port,
-      tokenRequired,
-      lastSeen: Date.now(),
-      baseUrl,
-      hosts: [host],
-      manual: true
-    }
-    this.table.setManual(peer)
-    this.emit()
-    return { ok: true, peer }
-  }
-
-  removeManual(req: PeerRemoveManualRequest): { ok: boolean } {
-    if (this.table.removeManual(req.host, Number(req.port))) this.emit()
-    return { ok: true }
   }
 
   private ifaceSnapshot(): string {
@@ -417,6 +366,7 @@ export class PeerDiscovery {
         name: this.announce.name || hostname(),
         port: this.announce.port,
         tokenRequired: this.announce.tokenRequired,
+        groups: this.announce.groups?.() ?? [],
         ...(host ? { host } : {}),
         ...(allHosts.length > 0 ? { hosts: allHosts } : {})
       }
@@ -486,7 +436,8 @@ export class PeerDiscovery {
           announcedHost: announced,
           announcedHosts,
           fromHost: from,
-          at: Date.now()
+          at: Date.now(),
+          groups: sanitizeGroups(data.groups)
         },
         getLanIfaces()
       )

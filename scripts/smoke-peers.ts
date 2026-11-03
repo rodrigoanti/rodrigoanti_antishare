@@ -6,7 +6,7 @@
  * two-instance case uses real UDP sockets on throwaway ports.
  */
 import { PeerDiscovery } from '../src/main/discovery'
-import { PeerTable, buildPeerRecord, isPeerExpired } from '../src/main/peerTable'
+import { PeerTable, buildPeerRecord, isPeerExpired, sanitizeGroups } from '../src/main/peerTable'
 import { PEER_STALE_MS, type Peer } from '../src/shared/types'
 
 const IFACES = [{ address: '192.168.100.102', netmask: '255.255.255.0' }]
@@ -123,27 +123,27 @@ function testRestart(): void {
   console.log('restart OK')
 }
 
-function testManualAndGuards(): void {
+function testGroupsAndGuards(): void {
+  // Announcements are untrusted: keep only well-formed groups, never extra fields.
+  const groups = sanitizeGroups([
+    { id: 'abcdef123456', name: 'Diseño', keySince: 5, key: 'secreto' },
+    { id: '../etc', name: 'malo', keySince: 1 },
+    { id: 'abcdef654321', name: 'Sin fecha' },
+    { id: 'abcdef999999', name: 'Borrado', keySince: 2, deleted: true },
+    'basura'
+  ])
+  assert(groups.length === 2, `grupos saneados: ${JSON.stringify(groups)}`)
+  assert(!('key' in groups[0]), 'no debe copiar campos desconocidos')
+  assert(groups[1].deleted === true, 'debe conservar la marca de borrado')
+  assert(sanitizeGroups('x').length === 0, 'payload inválido debe dar lista vacía')
+
   const table = new PeerTable({ ttlMs: TTL })
   const t0 = 4_000_000
-  table.setManual({
-    name: '192.168.1.5:8765',
-    host: '192.168.1.5',
-    port: 8765,
-    tokenRequired: false,
-    lastSeen: t0,
-    baseUrl: 'http://192.168.1.5:8765',
-    hosts: ['192.168.1.5'],
-    manual: true
-  })
-  assert(table.list(t0 + TTL * 10).length === 1, 'un peer manual no debe expirar')
+  assert(table.ingest({ ...obs({ at: t0 }), groups }, IFACES), 'primer anuncio con grupos')
   assert(
-    table.ingest(obs({ at: t0, fromHost: '192.168.1.5', announcedHosts: ['192.168.1.5'] }), IFACES),
-    'un anuncio sobre un manual debía actualizarlo'
+    table.ingest({ ...obs({ at: t0 + 1 }), groups: [groups[0]] }, IFACES),
+    'cambiar los grupos anunciados debe notificar a la UI'
   )
-  assert(table.list(t0)[0].manual === true, 'debía conservar la marca manual')
-  assert(table.removeManual('192.168.1.5', 8765), 'removeManual debía borrarlo')
-  assert(table.size === 0, 'removeManual dejó residuos')
 
   // Never build a record out of loopback-only announcements.
   assert(
@@ -158,9 +158,8 @@ function testManualAndGuards(): void {
     IFACES
   )
   assert(rec !== null && rec.baseUrl === 'http://192.168.100.9:8765', 'baseUrl mal armado')
-  assert(!isPeerExpired({ ...rec!, manual: true }, 1e12, TTL), 'manual no expira')
   assert(isPeerExpired(rec!, 5 + TTL + 1, TTL), 'isPeerExpired no respeta el TTL')
-  console.log('manual + guards OK')
+  console.log('groups + guards OK')
 }
 
 async function testTwoLiveInstances(): Promise<void> {
@@ -213,7 +212,7 @@ async function main(): Promise<void> {
   testDisconnect()
   testIpChange()
   testRestart()
-  testManualAndGuards()
+  testGroupsAndGuards()
   await testTwoLiveInstances()
   console.log('OK')
 }

@@ -5,7 +5,6 @@
  *
  * Uses listen + announce split (no TMPDIR registry).
  */
-import { createServer } from 'http'
 import { PeerDiscovery } from '../src/main/discovery'
 
 async function sleep(ms: number): Promise<void> {
@@ -13,7 +12,7 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function udpPeers(d: PeerDiscovery) {
-  return d.list().filter((p) => !p.manual)
+  return d.list()
 }
 
 async function main(): Promise<void> {
@@ -45,7 +44,12 @@ async function main(): Promise<void> {
   b.startListening()
   await sleep(200)
 
-  a.setAnnounce({ name: 'peer-a', port: 28765, tokenRequired: false })
+  a.setAnnounce({
+    name: 'peer-a',
+    port: 28765,
+    tokenRequired: false,
+    groups: () => [{ id: 'abcdef123456', name: 'Diseño', keySince: 1 }]
+  })
   b.setAnnounce({ name: 'peer-b', port: 28767, tokenRequired: true })
 
   for (let i = 0; i < 25 && !(aSawB && bSawA); i++) {
@@ -63,17 +67,14 @@ async function main(): Promise<void> {
     throw new Error('peer-b listed itself')
   }
 
-  // Manual join probe against a tiny HTTP peer
-  const probe = createServer((_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end('[]')
-  })
-  await new Promise<void>((r) => probe.listen(28770, '127.0.0.1', () => r()))
-  const manual = await a.addManual({ host: '127.0.0.1', port: 28770 })
-  console.log('manual', manual.ok, manual.peer?.baseUrl)
-  if (!manual.ok) throw new Error(`manual add failed: ${manual.error}`)
-  a.removeManual({ host: '127.0.0.1', port: 28770 })
-  probe.close()
+  if (bSawA) {
+    const seenA = b.list().find((p) => p.port === 28765)
+    const group = seenA?.groups?.[0]
+    if (!group || group.id !== 'abcdef123456' || group.name !== 'Diseño') {
+      throw new Error(`B no recibió los grupos de A: ${JSON.stringify(seenA?.groups)}`)
+    }
+    console.log('groups in announcement OK')
+  }
 
   // clearAnnounce should keep listening
   a.clearAnnounce()
@@ -84,11 +85,8 @@ async function main(): Promise<void> {
   b.stopListening()
 
   if (!aSawB || !bSawA) {
-    console.warn(
-      'WARN: UDP peers not mutual (broadcast may be blocked); manual add OK. Use peers:addManual on LAN.'
-    )
-    // Manual path is required acceptance when UDP fails
-    console.log('OK (manual path verified)')
+    console.warn('WARN: UDP peers not mutual (broadcast may be blocked on this machine).')
+    console.log('OK (self-filter verified; mutual discovery skipped)')
     return
   }
   console.log('OK')

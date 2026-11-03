@@ -16,9 +16,15 @@ import {
 import { basename, dirname, extname, join } from 'path'
 import { Transform } from 'stream'
 import { pipeline } from 'stream/promises'
-import type { Peer, SyncEntry, SyncIndexResponse, SyncStatus } from '../shared/types'
+import type {
+  GroupMetaResponse,
+  Peer,
+  SyncEntry,
+  SyncIndexResponse,
+  SyncStatus
+} from '../shared/types'
 import { resolveSafe } from './pathSafe'
-import { peerHttp } from './remote'
+import { peerHttp } from './peerHttp'
 import {
   SETTLE_MS,
   SYNC_TEMP_PREFIX,
@@ -39,13 +45,17 @@ const TRANSFER_TIMEOUT_MS = 120_000
 
 export interface SyncEngineOptions {
   root: string
-  space: string
-  token?: string
+  groupId: string
   /** Absolute path of the persisted index file (outside the synced folder). */
   indexFile: string
   deviceId: string
   deviceName: string
+  /** Peers announcing this group. */
   listPeers: () => Peer[]
+  /** Auth headers for a request to `pathAndQuery` (signed with the current group key). */
+  sign: (method: string, pathAndQuery: string) => Record<string, string>
+  /** Group settings seen on a peer (name, deletion). */
+  onPeerMeta?: (meta: GroupMetaResponse) => void
 }
 
 function isValidSyncPath(path: unknown): path is string {
@@ -90,7 +100,7 @@ function conflictName(abs: string, deviceName: string): string {
 }
 
 /**
- * Keeps one folder identical across every machine in the same sync space.
+ * Keeps one folder identical across every member of a group.
  * Pull-only: each device downloads newer versions from peers and never writes to theirs.
  */
 export class SyncEngine {
@@ -107,7 +117,6 @@ export class SyncEngine {
   constructor(private readonly opts: SyncEngineOptions) {
     this.index = new SyncIndex(opts.indexFile, opts.deviceId)
     this.status = {
-      space: opts.space,
       state: 'idle',
       peers: 0,
       files: this.index.liveFileCount(),
@@ -147,17 +156,22 @@ export class SyncEngine {
 
   indexResponse(): SyncIndexResponse {
     return {
-      space: this.opts.space,
+      groupId: this.opts.groupId,
       deviceId: this.opts.deviceId,
       deviceName: this.opts.deviceName,
       entries: this.index.publicEntries()
     }
   }
 
-  /** A peer in our space says it has changes: pull soon instead of waiting for the timer. */
-  onNotify(space: string, deviceId: string): void {
-    if (space !== this.opts.space || deviceId === this.opts.deviceId) return
+  /** A member says it has changes: pull soon instead of waiting for the timer. */
+  onNotify(deviceId: string): void {
+    if (deviceId === this.opts.deviceId) return
     this.scheduleRound(NOTIFY_DEBOUNCE_MS)
+  }
+
+  /** Tell members to pull now (e.g. after a rename or password change). */
+  kick(): void {
+    void this.notifyPeers()
   }
 
   private scheduleRound(delayMs: number): void {
@@ -166,8 +180,14 @@ export class SyncEngine {
     this.scanDebounce = setTimeout(() => void this.round(), delayMs)
   }
 
-  private authHeaders(): Record<string, string> {
-    return this.opts.token ? { 'X-Share-Token': this.opts.token } : {}
+  private groupPath(rest: string): string {
+    return `/g/${this.opts.groupId}/${rest}`
+  }
+
+  /** Signs exactly the path + query the HTTP client will put on the request line. */
+  private signed(method: string, url: string): Record<string, string> {
+    const u = new URL(url)
+    return this.opts.sign(method, `${u.pathname}${u.search}`)
   }
 
   private peerBases(peer: Peer): string[] {
@@ -223,19 +243,31 @@ export class SyncEngine {
     }
   }
 
+  /** Meta first (it may carry a new key), then the file index. */
   private async fetchIndex(
     peer: Peer
   ): Promise<{ base: string; index: SyncIndexResponse } | null> {
     for (const base of this.peerBases(peer)) {
       try {
-        const res = await peerHttp(`${base}/api/sync/index`, {
-          headers: this.authHeaders(),
+        const metaUrl = `${base}${this.groupPath('meta')}`
+        const metaRes = await peerHttp(metaUrl, {
+          headers: this.signed('GET', metaUrl),
           timeoutMs: INDEX_TIMEOUT_MS
         })
-        // 404 = peer not syncing, 401 = different key: neither is part of our space.
+        // 401 = different password, 404 = the peer left the group: not a member for us.
+        if (!metaRes.ok) return null
+        const meta = (await metaRes.json()) as GroupMetaResponse
+        if (meta.id === this.opts.groupId) this.opts.onPeerMeta?.(meta)
+        if (this.stopped || meta.meta?.deleted) return null
+
+        const indexUrl = `${base}${this.groupPath('index')}`
+        const res = await peerHttp(indexUrl, {
+          headers: this.signed('GET', indexUrl),
+          timeoutMs: INDEX_TIMEOUT_MS
+        })
         if (!res.ok) return null
         const body = (await res.json()) as SyncIndexResponse
-        if (body.space !== this.opts.space || body.deviceId === this.opts.deviceId) return null
+        if (body.groupId !== this.opts.groupId || body.deviceId === this.opts.deviceId) return null
         if (!Array.isArray(body.entries)) return null
         return { base, index: body }
       } catch {
@@ -246,15 +278,16 @@ export class SyncEngine {
   }
 
   private async notifyPeers(): Promise<void> {
-    const body = JSON.stringify({ space: this.opts.space, deviceId: this.opts.deviceId })
+    const body = JSON.stringify({ deviceId: this.opts.deviceId })
     await Promise.all(
       this.opts.listPeers().map(async (peer) => {
         const [base] = this.peerBases(peer)
         if (!base) return
+        const url = `${base}${this.groupPath('notify')}`
         try {
-          await peerHttp(`${base}/api/sync/notify`, {
+          await peerHttp(url, {
             method: 'POST',
-            headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
+            headers: { ...this.signed('POST', url), 'Content-Type': 'application/json' },
             body,
             timeoutMs: INDEX_TIMEOUT_MS
           })
@@ -363,8 +396,9 @@ export class SyncEngine {
     const tmp = join(dir, `${SYNC_TEMP_PREFIX}${randomBytes(6).toString('hex')}`)
     try {
       mkdirSync(dir, { recursive: true })
-      const res = await peerHttp(`${base}/api/download?path=${encodeURIComponent(r.path)}`, {
-        headers: this.authHeaders(),
+      const url = `${base}${this.groupPath('download')}?path=${encodeURIComponent(r.path)}`
+      const res = await peerHttp(url, {
+        headers: this.signed('GET', url),
         timeoutMs: TRANSFER_TIMEOUT_MS,
         stream: true
       })

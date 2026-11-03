@@ -1,204 +1,124 @@
 import { app, dialog, ipcMain, BrowserWindow, shell } from 'electron'
-import { createHash } from 'crypto'
-import { existsSync, statSync } from 'fs'
 import { hostname } from 'os'
-import { join } from 'path'
 import {
   DEFAULT_SHARE_PORT,
   type DirEntry,
-  type Peer,
-  type PeerAddManualRequest,
-  type PeerRemoveManualRequest,
-  type ShareSettings,
-  type ShareStartRequest,
-  type ShareStartResult,
-  type ShareStatus,
-  type ShareStopResult,
-  type ShareListLocalRequest,
-  type ShareListLocalResult,
-  type RemoteListRequest,
-  type RemoteDownloadRequest,
-  type RemoteUploadRequest,
-  type ImportLocalRequest,
-  type RemoteImportRequest,
   type ExportItemsRequest,
   type ExportItemsResult,
-  type PrepareDragRequest,
-  type PrepareDragResult,
+  type FileOpenRequest,
   type FsMkdirRequest,
-  type FsRenameRequest,
   type FsMoveRequest,
+  type FsOpResult,
   type FsRemoveRequest,
-  type RemoteFsMkdirRequest,
-  type RemoteFsRenameRequest,
-  type RemoteFsMoveRequest,
-  type RemoteFsRemoveRequest
+  type FsRenameRequest,
+  type GroupCreateRequest,
+  type GroupJoinRequest,
+  type GroupLeaveRequest,
+  type GroupsSnapshot,
+  type GroupUpdateRequest,
+  type ImportLocalRequest,
+  type ShareListLocalRequest,
+  type ShareListLocalResult
 } from '../shared/types'
-import { listShareFolder, startShareServer, type ShareServerHandle } from './shareServer'
+import { listShareFolder } from './listFolder'
+import { startGroupServer, type GroupServerHandle } from './groupServer'
+import { GroupManager } from './groupManager'
 import { PeerDiscovery } from './discovery'
-import {
-  remoteDownload,
-  remoteList,
-  remoteMkdir,
-  remoteMove,
-  remoteRemove,
-  remoteRename,
-  remoteUpload
-} from './remote'
 import { mkdirLocal, moveLocal, removeLocal, renameLocal } from './fsOps'
-import { importLocalPaths, importRemotePaths } from './importFiles'
+import { importLocalPaths } from './importFiles'
 import { exportItemsToFolder } from './exportItems'
-import { loadDeviceId, loadSettings, saveSettings } from './settings'
-import { SyncEngine } from './syncEngine'
+import { loadDeviceId } from './settings'
 import { runNetworkDiagnose } from './diagnose'
-import { handlePrepareDrag, ensureDragIconFile } from './drag'
-import { buildShareUrls, uniqueHosts } from './net'
+import { resolveSafe } from './pathSafe'
 
-function liveShareUrls(port: number = DEFAULT_SHARE_PORT): string[] {
-  return buildShareUrls(port).all
-}
-
-let share: ShareServerHandle | null = null
-let sync: SyncEngine | null = null
+let server: GroupServerHandle | null = null
+let serverError: string | undefined
+let groups: GroupManager | null = null
 const discovery = new PeerDiscovery()
 
-function stopSync(): void {
-  sync?.stop()
-  sync = null
-}
-
-/** One index per folder + space pair, kept in userData so it never syncs itself. */
-function syncIndexFile(root: string, space: string): string {
-  const key = createHash('sha1').update(`${root}\0${space}`).digest('hex')
-  return join(app.getPath('userData'), 'sync', `${key}.json`)
-}
-
-function broadcastPeers(peers: Peer[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('peers:onUpdate', peers)
-  }
-}
-
-function bindErrorMessage(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err)
-  if (
-    msg.includes('EADDRINUSE') ||
-    msg.toLowerCase().includes('ya está en uso') ||
-    (err as NodeJS.ErrnoException)?.code === 'EADDRINUSE'
-  ) {
-    return `El puerto ${DEFAULT_SHARE_PORT} ya está en uso. Cierra la otra instancia de AntiShare (u otra app) que lo esté usando e intenta de nuevo.`
-  }
-  return msg
-}
-
-async function startShareInternal(req: ShareStartRequest): Promise<ShareStartResult> {
-  try {
-    stopSync()
-    if (share) {
-      await share.stop()
-      share = null
-    }
-    // Fixed share port — ignore req.port
-    const port = DEFAULT_SHARE_PORT
-    const handle = await startShareServer({
-      folder: req.folder,
-      port,
-      token: req.token,
-      sync: () => sync
+function manager(): GroupManager {
+  if (!groups) {
+    groups = new GroupManager({
+      dataDir: app.getPath('userData'),
+      deviceId: loadDeviceId(),
+      deviceName: hostname(),
+      listPeers: () => discovery.list()
     })
-    share = handle
-    const space = req.syncSpace?.trim()
-    if (space) {
-      sync = new SyncEngine({
-        root: handle.folder,
-        space,
-        token: req.token,
-        indexFile: syncIndexFile(handle.folder, space),
-        deviceId: loadDeviceId(),
-        deviceName: hostname(),
-        listPeers: () => discovery.list()
-      })
-      sync.start()
-    }
-    // Announce only while this exact server is the live one and still bound.
+  }
+  return groups
+}
+
+const NO_GROUP = 'Ese grupo no tiene una carpeta disponible en este equipo.'
+
+function rootFor(groupId: string | undefined): string | null {
+  return manager().rootFor(groupId)
+}
+
+function listLocal(req?: ShareListLocalRequest): ShareListLocalResult {
+  const root = rootFor(req?.groupId)
+  if (!root) return { ok: false, error: NO_GROUP }
+  try {
+    const entries: DirEntry[] = listShareFolder(root, req?.path || '')
+    return { ok: true, entries, folder: root }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+function snapshot(): GroupsSnapshot {
+  const m = manager()
+  return {
+    serverRunning: server !== null && server.address !== null,
+    ...(serverError ? { serverError } : {}),
+    deviceName: hostname(),
+    groups: m.groups(),
+    discovered: m.discovered()
+  }
+}
+
+/** Server + announcements run for the whole app life: groups need them to sync. */
+export async function startGroups(): Promise<void> {
+  const m = manager()
+  try {
+    const handle = await startGroupServer({ port: DEFAULT_SHARE_PORT, hooks: m.serverHooks() })
+    server = handle
+    serverError = undefined
     discovery.setAnnounce({
       name: hostname(),
       port: handle.port,
-      tokenRequired: handle.tokenRequired,
-      isServing: () => share === handle && handle.address !== null
+      tokenRequired: false,
+      isServing: () => server === handle && handle.address !== null,
+      groups: () => m.announced()
     })
-    return { ok: true, urls: liveShareUrls(handle.port), port: handle.port }
   } catch (e) {
-    return {
-      ok: false,
-      urls: [],
-      port: DEFAULT_SHARE_PORT,
-      error: bindErrorMessage(e)
+    serverError = e instanceof Error ? e.message : String(e)
+    console.error('[groups] server failed', serverError)
+  }
+  m.start()
+}
+
+/** Progress events for import/export, throttled to ~20/s. */
+function progressEmitter(
+  sender: Electron.WebContents,
+  channel: string
+): (copied: number, total: number, done?: boolean) => void {
+  let lastEmit = 0
+  return (copiedBytes, totalBytes, done) => {
+    const now = Date.now()
+    if (!done && now - lastEmit < 50 && totalBytes > 0 && copiedBytes < totalBytes) return
+    lastEmit = now
+    if (!sender.isDestroyed()) {
+      sender.send(channel, { copiedBytes, totalBytes, ...(done ? { done: true } : {}) })
     }
-  }
-}
-
-function resolveLocalRoot(): string | null {
-  if (share?.folder) return share.folder
-  const settings = loadSettings()
-  if (settings.folder && existsSync(settings.folder)) {
-    try {
-      if (statSync(settings.folder).isDirectory()) return settings.folder
-    } catch {
-      return null
-    }
-  }
-  return null
-}
-
-function listLocal(pathParam?: string): ShareListLocalResult {
-  const root = resolveLocalRoot()
-  if (!root) {
-    return { ok: false, error: 'No hay carpeta compartida configurada.' }
-  }
-  try {
-    const entries: DirEntry[] = listShareFolder(root, pathParam || '')
-    return { ok: true, entries, folder: root }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    return { ok: false, error: msg }
-  }
-}
-
-/** Restore share from disk settings when autoStart && folder exists. */
-export async function restoreAutoStart(): Promise<void> {
-  const settings = loadSettings()
-  if (!settings.autoStart || !settings.folder) return
-  if (!existsSync(settings.folder)) {
-    console.warn('[settings] autoStart folder missing, leaving share stopped:', settings.folder)
-    return
-  }
-  try {
-    if (!statSync(settings.folder).isDirectory()) return
-  } catch {
-    return
-  }
-  const result = await startShareInternal({
-    folder: settings.folder,
-    token: settings.token,
-    syncSpace: settings.syncSpace
-  })
-  if (!result.ok) {
-    console.error('[settings] autoStart failed:', result.error)
   }
 }
 
 export function registerIpc(): void {
-  discovery.onUpdate(broadcastPeers)
+  discovery.onUpdate((peers) => {
+    manager().onPeersChanged()
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('peers:onUpdate', peers)
+  })
   discovery.startListening()
-  ensureDragIconFile()
-
-  ipcMain.handle('settings:get', async (): Promise<ShareSettings> => loadSettings())
-
-  ipcMain.handle(
-    'settings:set',
-    async (_e, partial: Partial<ShareSettings>): Promise<ShareSettings> => saveSettings(partial)
-  )
 
   ipcMain.handle('share:selectFolder', async () => {
     const result = await dialog.showOpenDialog({
@@ -208,185 +128,71 @@ export function registerIpc(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('share:start', async (_e, raw: ShareStartRequest): Promise<ShareStartResult> => {
-    // Fields left out (quick share from a folder drop) keep the saved key and sync space.
-    const saved = loadSettings()
-    const req: ShareStartRequest = {
-      ...raw,
-      token: raw.token !== undefined ? raw.token : saved.token,
-      syncSpace: raw.syncSpace !== undefined ? raw.syncSpace : saved.syncSpace
-    }
-    const result = await startShareInternal({ ...req, token: req.token || undefined })
-    if (result.ok) {
-      saveSettings({
-        folder: req.folder,
-        token: req.token && req.token.length > 0 ? req.token : '',
-        syncSpace: req.syncSpace ?? '',
-        autoStart: true
-      })
-    }
-    return result
-  })
+  ipcMain.handle('share:listLocal', async (_e, req?: ShareListLocalRequest) => listLocal(req))
 
-  ipcMain.handle('share:stop', async (): Promise<ShareStopResult> => {
-    try {
-      stopSync()
-      if (share) {
-        await share.stop()
-        share = null
-      }
-      discovery.clearAnnounce()
-      saveSettings({ autoStart: false })
-      return { ok: true }
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
-    }
-  })
+  ipcMain.handle('network:diagnose', async () => runNetworkDiagnose({ server, discovery }))
 
-  ipcMain.handle('share:status', async (): Promise<ShareStatus> => {
-    // A handle whose socket is no longer bound is not running, whatever we last stored.
-    if (!share || share.address === null) {
-      return {
-        running: false,
-        folder: null,
-        port: null,
-        urls: [],
-        tokenRequired: false
-      }
-    }
-    return {
-      running: true,
-      folder: share.folder,
-      port: share.port,
-      urls: liveShareUrls(share.port),
-      tokenRequired: share.tokenRequired,
-      ...(sync ? { sync: sync.getStatus() } : {})
-    }
-  })
+  ipcMain.handle('groups:list', async (): Promise<GroupsSnapshot> => snapshot())
+  ipcMain.handle('groups:create', async (_e, req: GroupCreateRequest) => manager().create(req))
+  ipcMain.handle('groups:join', async (_e, req: GroupJoinRequest) => manager().join(req))
+  ipcMain.handle('groups:update', async (_e, req: GroupUpdateRequest) => manager().update(req))
+  ipcMain.handle('groups:leave', async (_e, req: GroupLeaveRequest) => manager().leave(req))
 
-  ipcMain.handle(
-    'share:listLocal',
-    async (_e, req?: ShareListLocalRequest): Promise<ShareListLocalResult> =>
-      listLocal(req?.path)
-  )
-
-  ipcMain.handle('network:diagnose', async () =>
-    runNetworkDiagnose({ share, discovery })
-  )
-
-  ipcMain.handle('peers:list', async (): Promise<Peer[]> => discovery.list())
-
-  ipcMain.handle('peers:addManual', async (_e, req: PeerAddManualRequest) =>
-    discovery.addManual(req)
-  )
-  ipcMain.handle('peers:removeManual', async (_e, req: PeerRemoveManualRequest) =>
-    discovery.removeManual(req)
-  )
-
-  ipcMain.handle('remote:list', async (_e, req: RemoteListRequest) => {
-    const base = (req.baseUrl || '').replace(/\/+$/, '')
-    const known = discovery.list().find((p) => {
-      if (p.baseUrl.replace(/\/+$/, '') === base) return true
-      return [p.host, ...(p.hosts ?? [])].some((h) => base === `http://${h}:${p.port}`)
-    })
-    if (!known) return remoteList(req)
-
-    // discovery already ranked hosts with the verified UDP source first; re-ranking here
-    // (without that source) could promote a look-alike same-subnet IP that never replies.
-    const ranked = uniqueHosts([known.host, ...(known.hosts ?? [])])
-    const urls = ranked.map((h) => `http://${h}:${known.port}`)
-    const primaryUrl = urls[0] || base
-    const altBaseUrls = [...urls.slice(1), ...(req.altBaseUrls ?? [])].filter(
-      (u, i, arr) => u && u !== primaryUrl && arr.indexOf(u) === i
-    )
-    return remoteList({
-      ...req,
-      baseUrl: primaryUrl,
-      altBaseUrls: altBaseUrls.length ? altBaseUrls : undefined
-    })
-  })
-  ipcMain.handle('remote:download', async (_e, req: RemoteDownloadRequest) => remoteDownload(req))
-  ipcMain.handle('remote:upload', async (_e, req: RemoteUploadRequest) => remoteUpload(req))
   ipcMain.handle('files:importLocal', async (event, req: ImportLocalRequest) => {
-    let lastEmit = 0
-    let lastCopied = 0
-    let lastTotal = 0
-    const emit = (copiedBytes: number, totalBytes: number, done?: boolean): void => {
-      lastCopied = copiedBytes
-      lastTotal = totalBytes
-      const now = Date.now()
-      if (!done && now - lastEmit < 50 && copiedBytes < totalBytes) return
-      lastEmit = now
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('files:importProgress', {
-          copiedBytes,
-          totalBytes,
-          ...(done ? { done: true } : {})
-        })
-      }
-    }
+    const emit = progressEmitter(event.sender, 'files:importProgress')
+    let last = { copied: 0, total: 0 }
     try {
-      const result = await importLocalPaths(resolveLocalRoot(), req, (copiedBytes, totalBytes) => {
-        emit(copiedBytes, totalBytes)
+      const result = await importLocalPaths(rootFor(req.groupId), req, (copied, total) => {
+        last = { copied, total }
+        emit(copied, total)
       })
-      emit(lastTotal || lastCopied, lastTotal, true)
+      emit(last.total || last.copied, last.total, true)
       return result
     } catch (err) {
-      emit(lastCopied, lastTotal, true)
+      emit(last.copied, last.total, true)
       throw err
     }
   })
-  ipcMain.handle('files:importRemote', async (_e, req: RemoteImportRequest) =>
-    importRemotePaths(req)
-  )
+
   ipcMain.handle(
     'files:exportItems',
     async (event, req: ExportItemsRequest): Promise<ExportItemsResult> => {
-      let lastEmit = 0
-      let lastCopied = 0
-      let lastTotal = 0
-      const emit = (copiedBytes: number, totalBytes: number, done?: boolean): void => {
-        lastCopied = copiedBytes
-        lastTotal = totalBytes
-        const now = Date.now()
-        if (!done && now - lastEmit < 50 && totalBytes > 0 && copiedBytes < totalBytes) return
-        lastEmit = now
-        if (!event.sender.isDestroyed()) {
-          event.sender.send('files:exportProgress', {
-            copiedBytes,
-            totalBytes,
-            ...(done ? { done: true } : {})
-          })
-        }
-      }
+      const emit = progressEmitter(event.sender, 'files:exportProgress')
+      let last = { copied: 0, total: 0 }
       try {
-        const result = await exportItemsToFolder(resolveLocalRoot(), req, (copiedBytes, totalBytes) => {
-          emit(copiedBytes, totalBytes)
+        const result = await exportItemsToFolder(rootFor(req.groupId), req, (copied, total) => {
+          last = { copied, total }
+          emit(copied, total)
         })
-        emit(lastTotal || lastCopied, lastTotal, true)
+        emit(last.total || last.copied, last.total, true)
         return result
       } catch (err) {
-        emit(lastCopied, lastTotal, true)
+        emit(last.copied, last.total, true)
         throw err
       }
     }
   )
-  ipcMain.handle('files:mkdir', async (_e, req: FsMkdirRequest) =>
-    mkdirLocal(resolveLocalRoot(), req)
-  )
+
+  ipcMain.handle('files:mkdir', async (_e, req: FsMkdirRequest) => mkdirLocal(rootFor(req.groupId), req))
   ipcMain.handle('files:rename', async (_e, req: FsRenameRequest) =>
-    renameLocal(resolveLocalRoot(), req)
+    renameLocal(rootFor(req.groupId), req)
   )
-  ipcMain.handle('files:move', async (_e, req: FsMoveRequest) =>
-    moveLocal(resolveLocalRoot(), req)
-  )
+  ipcMain.handle('files:move', async (_e, req: FsMoveRequest) => moveLocal(rootFor(req.groupId), req))
   ipcMain.handle('files:remove', async (_e, req: FsRemoveRequest) =>
-    removeLocal(resolveLocalRoot(), req)
+    removeLocal(rootFor(req.groupId), req)
   )
-  ipcMain.handle('remote:mkdir', async (_e, req: RemoteFsMkdirRequest) => remoteMkdir(req))
-  ipcMain.handle('remote:rename', async (_e, req: RemoteFsRenameRequest) => remoteRename(req))
-  ipcMain.handle('remote:move', async (_e, req: RemoteFsMoveRequest) => remoteMove(req))
-  ipcMain.handle('remote:remove', async (_e, req: RemoteFsRemoveRequest) => remoteRemove(req))
+
+  ipcMain.handle('files:open', async (_e, req: FileOpenRequest): Promise<FsOpResult> => {
+    const root = rootFor(req?.groupId)
+    if (!root) return { ok: false, error: NO_GROUP }
+    try {
+      const abs = resolveSafe(root, req.path)
+      const error = await shell.openPath(abs)
+      return error ? { ok: false, error } : { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
 
   ipcMain.handle('shell:showItemInFolder', async (_e, filePath: string) => {
     if (typeof filePath !== 'string' || !filePath.trim()) {
@@ -402,19 +208,13 @@ export function registerIpc(): void {
       }
     }
   })
-
-  ipcMain.handle(
-    'files:prepareDrag',
-    async (_e, req: PrepareDragRequest): Promise<PrepareDragResult> =>
-      handlePrepareDrag(req, resolveLocalRoot())
-  )
 }
 
-export async function shutdownShare(): Promise<void> {
+export async function shutdownGroups(): Promise<void> {
   discovery.stopListening()
-  stopSync()
-  if (share) {
-    await share.stop()
-    share = null
+  groups?.stop()
+  if (server) {
+    await server.stop()
+    server = null
   }
 }

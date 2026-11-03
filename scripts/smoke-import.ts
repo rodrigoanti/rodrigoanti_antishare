@@ -13,14 +13,12 @@ import {
 } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { importLocalPaths, importRemotePaths } from '../src/main/importFiles'
-import { listShareFolder, startShareServer } from '../src/main/shareServer'
-import { remoteUpload } from '../src/main/remote'
+import { importLocalPaths } from '../src/main/importFiles'
+import { listShareFolder } from '../src/main/listFolder'
 
 const stamp = Date.now()
 const shareRoot = join(tmpdir(), `antishare-import-share-${stamp}`)
 const outside = join(tmpdir(), `antishare-import-src-${stamp}`)
-const PORT = Number(process.env.ANTISHARE_TEST_PORT || 18767)
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg)
@@ -126,64 +124,11 @@ async function main(): Promise<void> {
       'copy externo no llegó a nested'
     )
 
-    const handle = await startShareServer({ folder: shareRoot, port: PORT })
-    const baseUrl = `http://127.0.0.1:${PORT}`
-    try {
-      const single = await remoteUpload({
-        baseUrl,
-        path: '',
-        filePath: join(outside, 'hello.txt')
-      })
-      assert(single.ok, `remoteUpload archivo: ${single.error}`)
+    const names = listShareFolder(shareRoot, 'nested').map((e) => e.name).sort()
+    assert(names.includes('hello.txt') && names.includes('readme.txt'), `listado nested: ${names}`)
 
-      const remoteFile = await importRemotePaths({
-        baseUrl,
-        sources: [join(outside, 'hello.txt')],
-        destPath: 'inbox'
-      })
-      assert(remoteFile.ok, `remote file: ${remoteFile.error}`)
-      assert(
-        readFileSync(join(shareRoot, 'inbox', 'hello.txt'), 'utf8').includes('import-hello'),
-        'remote file no llegó'
-      )
-
-      const remoteNested = await importRemotePaths({
-        baseUrl,
-        sources: [join(outside, 'nested')],
-        destPath: 'inbox'
-      })
-      assert(remoteNested.ok, `remote nested: ${remoteNested.error}`)
-      assert(
-        readFileSync(join(shareRoot, 'inbox', 'nested', 'a', 'b.txt'), 'utf8').includes('deep'),
-        'remote nested b.txt'
-      )
-
-      const remoteEmpty = await importRemotePaths({
-        baseUrl,
-        sources: [join(outside, 'empty')],
-        destPath: 'inbox'
-      })
-      assert(remoteEmpty.ok, `remote empty: ${remoteEmpty.error}`)
-      assert(statSync(join(shareRoot, 'inbox', 'empty')).isDirectory(), 'remote empty dir')
-      assert(readdirSync(join(shareRoot, 'inbox', 'empty')).length === 0, 'remote empty no vacía')
-
-      const listed = listShareFolder(shareRoot, 'inbox')
-      const names = listed.map((e) => e.name).sort()
-      assert(names.includes('nested') && names.includes('empty') && names.includes('hello.txt'), `inbox: ${names}`)
-
-      const badRemote = await importRemotePaths({
-        baseUrl,
-        sources: ['not-absolute'],
-        destPath: ''
-      })
-      assert(!badRemote.ok, 'remote origen inválido debía fallar')
-
-      console.log('local file/nested/empty/batch/reject OK')
-      console.log('remote file/nested/empty + remoteUpload single OK')
-      console.log('OK')
-    } finally {
-      await handle.stop()
-    }
+    console.log('local file/nested/empty/batch/reject OK')
+    console.log('OK')
   } finally {
     rmSync(shareRoot, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })

@@ -3,14 +3,12 @@ import {
   DEFAULT_SHARE_PORT,
   DISCOVERY_PORT,
   type NetworkCheck,
-  type NetworkDiagnoseResult,
-  type ShareStatus
+  type NetworkDiagnoseResult
 } from '../shared/types'
 import type { PeerDiscovery } from './discovery'
 import { buildShareUrls, getLanIPv4, localAddressForPeer } from './net'
-import { peerHttp } from './remote'
-import { loadSettings } from './settings'
-import type { ShareServerHandle } from './shareServer'
+import { peerHttp } from './peerHttp'
+import type { GroupServerHandle } from './groupServer'
 
 function check(
   id: string,
@@ -80,13 +78,13 @@ function buildSummary(checks: NetworkCheck[]): string {
   const fails = checks.filter((c) => !c.ok && c.severity !== 'info')
   const warns = checks.filter((c) => !c.ok && c.severity === 'warn')
   if (fails.some((c) => c.id === 'shareRunning')) {
-    return 'El servidor no está compartiendo. Inicia el share para diagnosticar la LAN.'
+    return 'El servidor de grupos no está activo. Reinicia AntiShare.'
   }
   if (fails.some((c) => c.id === 'lanIp')) {
     return 'No hay IP LAN. Conéctate a Wi‑Fi o Ethernet e intenta de nuevo.'
   }
   if (fails.some((c) => c.id === 'httpLocal')) {
-    return 'HTTP en localhost falló. El share no responde en 127.0.0.1:8765.'
+    return 'HTTP en localhost falló. El servidor no responde en 127.0.0.1:8765.'
   }
   if (
     checks.find((c) => c.id === 'httpLocal')?.ok &&
@@ -104,9 +102,9 @@ function buildSummary(checks: NetworkCheck[]): string {
   if (fails.length === 0 && warns.length === 0) {
     const peers = checks.find((c) => c.id === 'peersSeen')
     if (peers && !peers.ok) {
-      return 'Red local OK. Todavía no se ven peers: inicia AntiShare en otra máquina o espera unos segundos.'
+      return 'Red local OK. Todavía no se ven otros equipos: abre AntiShare en otra máquina o espera unos segundos.'
     }
-    return 'Diagnóstico OK: share, LAN e discovery parecen listos.'
+    return 'Diagnóstico OK: servidor, LAN y descubrimiento parecen listos.'
   }
   if (fails.length > 0) {
     return `Hay ${fails.length} problema(s) que bloquean la red. Revisa los checks en rojo.`
@@ -115,41 +113,25 @@ function buildSummary(checks: NetworkCheck[]): string {
 }
 
 export async function runNetworkDiagnose(opts: {
-  share: ShareServerHandle | null
+  server: GroupServerHandle | null
   discovery: PeerDiscovery
 }): Promise<NetworkDiagnoseResult> {
-  const { share, discovery } = opts
-  const settings = loadSettings()
-  const token = settings.token
-  const running = share != null && share.address !== null
-  const status: ShareStatus = running
-    ? {
-        running: true,
-        folder: share!.folder,
-        port: DEFAULT_SHARE_PORT,
-        urls: buildShareUrls(DEFAULT_SHARE_PORT).all,
-        tokenRequired: share!.tokenRequired
-      }
-    : {
-        running: false,
-        folder: null,
-        port: null,
-        urls: [],
-        tokenRequired: false
-      }
+  const { server, discovery } = opts
+  const token: string | undefined = undefined
+  const running = server != null && server.address !== null
 
   const checks: NetworkCheck[] = []
 
   // 1. shareRunning
   checks.push(
     running
-      ? check('shareRunning', true, 'info', 'El share está en ejecución.', `Carpeta: ${status.folder}`)
+      ? check('shareRunning', true, 'info', 'El servidor de grupos está activo.')
       : check(
           'shareRunning',
           false,
           'error',
-          'El servidor no está compartiendo.',
-          'Abre Configurar e inicia el share con una carpeta.'
+          'El servidor de grupos no está activo.',
+          'Cierra otras instancias de AntiShare que ocupen el puerto 8765 y reinicia la app.'
         )
   )
 
@@ -187,8 +169,8 @@ export async function runNetworkDiagnose(opts: {
         'tcpListen',
         false,
         'warn',
-        `TCP ${DEFAULT_SHARE_PORT} no está escuchando (share detenido).`,
-        'Inicia el share para abrir el puerto.'
+        `TCP ${DEFAULT_SHARE_PORT} no está escuchando (servidor detenido).`,
+        'Reinicia AntiShare para abrir el puerto.'
       )
     )
   } else {
@@ -206,7 +188,7 @@ export async function runNetworkDiagnose(opts: {
             false,
             'error',
             `No se pudo conectar a 127.0.0.1:${DEFAULT_SHARE_PORT}.`,
-            'Reinicia el share o revisa si otra app ocupa el puerto.'
+            'Reinicia AntiShare o revisa si otra app ocupa el puerto.'
           )
     )
   }
@@ -214,23 +196,23 @@ export async function runNetworkDiagnose(opts: {
   // 4. httpLocal
   if (!running) {
     checks.push(
-      check('httpLocal', false, 'warn', 'HTTP local no probado (share detenido).')
+      check('httpLocal', false, 'warn', 'HTTP local no probado (servidor detenido).')
     )
   } else {
     const local = await probeHttp(
-      `http://127.0.0.1:${DEFAULT_SHARE_PORT}/api/list?path=`,
+      `http://127.0.0.1:${DEFAULT_SHARE_PORT}/api/hello`,
       token,
       3000
     )
     checks.push(
       local.ok
-        ? check('httpLocal', true, 'info', 'HTTP local OK (127.0.0.1:8765/api/list).')
+        ? check('httpLocal', true, 'info', 'HTTP local OK (127.0.0.1:8765/api/hello).')
         : check(
             'httpLocal',
             false,
             'error',
             `HTTP local falló${local.error ? `: ${local.error}` : '.'}`,
-            'El proceso principal no pudo listar la carpeta vía localhost.'
+            'El servidor no respondió vía localhost.'
           )
     )
   }
@@ -238,14 +220,14 @@ export async function runNetworkDiagnose(opts: {
   // 5. httpLan
   const primaryLan = lanIps[0]
   if (!running) {
-    checks.push(check('httpLan', false, 'warn', 'HTTP LAN no probado (share detenido).'))
+    checks.push(check('httpLan', false, 'warn', 'HTTP LAN no probado (servidor detenido).'))
   } else if (!primaryLan) {
     checks.push(
       check('httpLan', false, 'error', 'Sin IP LAN: no se puede probar HTTP por la red.')
     )
   } else {
     const lan = await probeHttp(
-      `http://${primaryLan}:${DEFAULT_SHARE_PORT}/api/list?path=`,
+      `http://${primaryLan}:${DEFAULT_SHARE_PORT}/api/hello`,
       token,
       4000
     )
@@ -338,7 +320,7 @@ export async function runNetworkDiagnose(opts: {
     )
     for (const host of hosts) {
       const tcpOk = await probeTcp(host, peer.port, 2000)
-      const http = await probeHttp(`http://${host}:${peer.port}/api/list?path=`, undefined, 3500)
+      const http = await probeHttp(`http://${host}:${peer.port}/api/hello`, undefined, 3500)
       const id = `peersHttp:${host}:${peer.port}`
       if (http.ok) {
         checks.push(

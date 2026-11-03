@@ -130,6 +130,73 @@
   box-shadow: 0 0 0 2px var(--as-green-soft);
 }
 
+.finder-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: var(--space-1);
+}
+
+.finder-sidebar-head .finder-sidebar-label {
+  margin-right: 0;
+}
+
+.finder-side-add {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: var(--space-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--as-gray-400);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.finder-side-add:hover {
+  background: var(--as-gray-100);
+  color: var(--as-blue);
+}
+
+.finder-side-add:focus-visible {
+  outline: 2px solid var(--as-blue);
+  outline-offset: 1px;
+}
+
+.finder-side-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--as-gray-100);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  line-height: 16px;
+  text-align: center;
+}
+
+.finder-side-item-discover {
+  color: var(--color-text-muted);
+}
+
+.finder-side-join {
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  color: var(--as-blue);
+  opacity: 0;
+  transform: translateX(-2px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.finder-side-item-discover:hover .finder-side-join,
+.finder-side-item-discover:focus-visible .finder-side-join {
+  opacity: 1;
+  transform: none;
+}
+
 .finder-side-hint {
   margin: var(--space-2);
   padding: 0 var(--space-1);
@@ -294,7 +361,7 @@
   display: block;
 }
 
-.finder-statusbar .finder-share-state {
+.finder-statusbar .finder-sync-state {
   flex-shrink: 0;
 }
 
@@ -316,28 +383,44 @@
   transition: width 120ms ease-out;
 }
 
-.finder-share-state {
+.finder-sync-state {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: var(--color-text-subtle);
-  transition: color var(--transition-fast);
+  gap: 6px;
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
-.finder-share-state.on {
-  color: var(--as-green);
-}
-
-.finder-share-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--as-gray-300);
-}
-
-.finder-share-dot.on {
+/* Sync tone dots: same 7px dot as the sidebar, colour says the state. */
+.finder-side-dot.sync-ok {
   background: var(--as-green);
   box-shadow: 0 0 0 2px var(--as-green-soft);
+}
+
+.finder-side-dot.sync-busy,
+.status-dot.sync-busy {
+  background: var(--as-blue);
+  animation: syncPulse 1.2s var(--ease-out) infinite;
+}
+
+.finder-side-dot.sync-warn,
+.status-dot.sync-warn {
+  background: var(--as-orange);
+}
+
+.status-dot.sync-ok {
+  background: var(--color-success);
+}
+
+@keyframes syncPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--as-blue) 45%, transparent);
+  }
+  60% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--as-blue) 0%, transparent);
+  }
 }
 
 .finder-tool-btn {
@@ -1482,3 +1565,137 @@ table.files tbody tr:hover {
     animation: none;
   }
 }
+
+/* ── Groups: discover cards, locked state, group panel ─────────────────── */
+
+.group-discover-list {
+  display: grid;
+  gap: var(--space-2);
+  width: min(320px, 100%);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.group-discover-card {
+  appearance: none;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+  animation: fadeInUp 220ms var(--ease-out) both;
+}
+
+.group-discover-card:hover {
+  border-color: color-mix(in srgb, var(--as-blue) 40%, transparent);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.group-discover-card:focus-visible {
+  outline: 2px solid var(--as-blue);
+  outline-offset: 2px;
+}
+
+.group-discover-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--as-blue-soft);
+  color: var(--as-blue);
+}
+
+.group-discover-text {
+  display: grid;
+  min-width: 0;
+}
+
+.group-discover-name {
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-discover-meta {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-discover-action {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--as-blue);
+}
+
+.group-locked-icon {
+  color: var(--as-orange);
+}
+
+.form-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  line-height: 1.4;
+}
+
+.group-panel {
+  gap: var(--space-5);
+}
+
+.group-panel-section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.group-panel-section .status-bar {
+  margin-top: 0;
+}
+
+.group-panel-section form.row > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.group-panel-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-muted);
+}
+
+.group-panel-path {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.group-panel-danger {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finder-side-dot.sync-busy,
+  .status-dot.sync-busy,
+  .group-discover-card {
+    animation: none;
+  }
+}
+

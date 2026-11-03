@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { registerIpc, restoreAutoStart, shutdownShare } from './ipc'
+import { registerIpc, shutdownGroups, startGroups } from './ipc'
 import { requestLocalNetworkAccess } from './localNetworkAccess'
 
 function resolveAppIcon(): string | undefined {
@@ -56,7 +56,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   registerIpc()
-  await restoreAutoStart()
+  await startGroups()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -68,5 +68,5 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  void shutdownShare()
+  void shutdownGroups()
 })
