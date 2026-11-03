@@ -167,8 +167,11 @@
 }
 
 .finder-side-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   min-width: 16px;
-  padding: 0 5px;
+  padding: 0 6px 0 5px;
   border-radius: var(--radius-pill);
   background: var(--as-gray-100);
   color: var(--color-text-muted);

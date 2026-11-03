@@ -9,6 +9,7 @@ import {
 } from 'react'
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   FolderPlus,
   FolderSync,
@@ -130,6 +131,13 @@ function compareEntries(a: DirEntry, b: DirEntry, key: SortKey, dir: SortDir): n
     }
   }
   return dir === 'asc' ? cmp : -cmp
+}
+
+/** "1 equipo conectado: PC-Ana" — other members online now (this device not counted). */
+function membersLabel(members: string[]): string {
+  if (members.length === 0) return 'Ningún otro equipo conectado'
+  const count = members.length === 1 ? '1 equipo conectado' : `${members.length} equipos conectados`
+  return `${count}: ${members.join(', ')}`
 }
 
 type JoinTarget = {
@@ -428,6 +436,17 @@ export function Home(): ReactElement {
     }
   }, [loadContents, nav.kind])
 
+  const canGoUp = nav.kind === 'group' && nav.path !== ''
+
+  /** Parent folder of the open one; at the group root there is nowhere to go. */
+  function goUp(): void {
+    if (nav.kind !== 'group' || !nav.path) return
+    const cut = nav.path.lastIndexOf('/')
+    const parent = cut <= 0 ? '' : nav.path.slice(0, cut)
+    setSelectedKey(nav.path)
+    setNav({ kind: 'group', groupId: nav.groupId, path: parent })
+  }
+
   const crumbs = useMemo(() => {
     const items: { label: string; go: () => void }[] = []
     if (nav.kind !== 'group') return items
@@ -448,6 +467,15 @@ export function Home(): ReactElement {
       if (renameMode || pendingDelete || joinTarget || createFolder !== null || settingsOpen || opBusy) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      // Finder: ⌘↑ · Explorer: Alt+↑ or Backspace.
+      const upKey =
+        (e.key === 'ArrowUp' && (e.metaKey || e.altKey)) ||
+        (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey)
+      if (upKey) {
+        e.preventDefault()
+        goUp()
+        return
+      }
       const entry = entries.find((en) => en.path === selectedKey)
       if (!entry) return
       if (e.key === 'Enter') {
@@ -463,7 +491,7 @@ export function Home(): ReactElement {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [nav.kind, renameMode, pendingDelete, joinTarget, createFolder, settingsOpen, opBusy, entries, selectedKey])
+  }, [nav, renameMode, pendingDelete, joinTarget, createFolder, settingsOpen, opBusy, entries, selectedKey])
 
   function openGroup(group: GroupView): void {
     setSelectedKey(null)
@@ -1085,6 +1113,18 @@ export function Home(): ReactElement {
     >
       <header className={`finder-toolbar${contentScrolled ? ' scrolled' : ''}`}>
         <div className="finder-toolbar-actions" role="toolbar" aria-label="Navegación">
+          {nav.kind === 'group' && groupReady ? (
+            <button
+              type="button"
+              className="finder-tool-btn"
+              aria-label="Carpeta superior"
+              title={`Carpeta superior (${api.platform === 'darwin' ? '⌘↑' : 'Alt+↑'})`}
+              disabled={!canGoUp}
+              onClick={goUp}
+            >
+              <ArrowLeft size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            </button>
+          ) : null}
           {importing ? (
             <span className="finder-import-status" role="status" aria-live="polite">
               Importando…
@@ -1133,19 +1173,22 @@ export function Home(): ReactElement {
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              className="finder-tool-btn"
-              aria-label={sort.dir === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
-              title={sort.dir === 'asc' ? 'Ascendente' : 'Descendente'}
-              onClick={toggleSortDir}
-            >
-              {sort.dir === 'asc' ? (
-                <ArrowUp size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-              ) : (
-                <ArrowDown size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-              )}
-            </button>
+            {/* List view: column headers already flip the direction. */}
+            {viewMode === 'icons' ? (
+              <button
+                type="button"
+                className="finder-tool-btn"
+                aria-label={sort.dir === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
+                title={sort.dir === 'asc' ? 'Ascendente' : 'Descendente'}
+                onClick={toggleSortDir}
+              >
+                {sort.dir === 'asc' ? (
+                  <ArrowUp size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                ) : (
+                  <ArrowDown size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                )}
+              </button>
+            ) : null}
           </div>
           <div className="finder-view-toggle" role="group" aria-label="Vista">
             <button
@@ -1227,7 +1270,7 @@ export function Home(): ReactElement {
                 className={`finder-side-item${active ? ' active' : ''}`}
                 aria-current={active ? 'page' : undefined}
                 onClick={() => openGroup(g)}
-                title={`${g.name} · ${sum.label}`}
+                title={`${g.name} · ${membersLabel(g.members)} · ${sum.label}`}
               >
                 <span className="finder-side-icon" aria-hidden="true">
                   <FolderSync size={ICON_SIDE} strokeWidth={ICON_STROKE} />
@@ -1235,7 +1278,8 @@ export function Home(): ReactElement {
                 <span className="finder-side-name">{g.name}</span>
                 <span className="finder-side-meta">
                   {g.members.length > 0 ? (
-                    <span className="finder-side-count" aria-label={`${g.members.length} conectados`}>
+                    <span className="finder-side-count" aria-label={membersLabel(g.members)}>
+                      <Users size={11} strokeWidth={2} aria-hidden="true" />
                       {g.members.length}
                     </span>
                   ) : null}
