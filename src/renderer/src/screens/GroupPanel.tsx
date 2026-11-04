@@ -19,6 +19,11 @@ export function syncSummary(group: GroupView): { label: string; tone: 'ok' | 'bu
   if (!group.sync) return { label: 'Sin carpeta', tone: 'warn' }
   const { state } = group.sync
   if (state === 'error') return { label: SYNC_LABEL.error, tone: 'warn' }
+  const { pending = 0, done = 0 } = group.sync
+  if (state === 'syncing' && pending > 0) {
+    const n = Math.min(done + 1, pending)
+    return { label: `Recibiendo ${n} de ${plural(pending, 'archivo', 'archivos')}`, tone: 'busy' }
+  }
   return { label: SYNC_LABEL[state], tone: state === 'idle' ? 'ok' : 'busy' }
 }
 

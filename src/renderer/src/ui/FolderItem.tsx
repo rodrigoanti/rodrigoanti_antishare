@@ -86,8 +86,11 @@ export function FolderItem({
     const el = renameRef.current
     if (!el) return
     el.focus()
-    el.select()
-  }, [renaming])
+    // Files: select only the base name so typing keeps the extension (like Finder/Explorer).
+    const lastDot = kind === 'file' ? el.value.lastIndexOf('.') : -1
+    if (lastDot > 0) el.setSelectionRange(0, lastDot)
+    else el.select()
+  }, [renaming, kind])
 
   const renameField = (
     <input

@@ -153,6 +153,10 @@ export interface SyncStatus {
   conflicts: number
   lastSyncAt: number | null
   error?: string
+  /** Files to download from the peer being merged (only while syncing). */
+  pending?: number
+  /** Downloads finished (or given up) out of pending. */
+  done?: number
 }
 
 export interface ShareListLocalRequest {

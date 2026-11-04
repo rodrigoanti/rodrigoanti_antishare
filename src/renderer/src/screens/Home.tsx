@@ -17,7 +17,6 @@ import {
   Lock,
   Moon,
   Plus,
-  RefreshCw,
   Search,
   Settings,
   Sun,
@@ -109,6 +108,37 @@ function writeSortPref(nav: Nav, pref: SortPref): void {
     localStorage.setItem(sortStorageKey(nav), JSON.stringify(pref))
   } catch {
     /* ignore quota / private mode */
+  }
+}
+
+/** Last open group folder, reopened on the next launch. */
+const LAST_NAV_KEY = 'antishare.lastNav'
+
+function readLastNav(): { groupId: string; path: string } | null {
+  try {
+    const raw = localStorage.getItem(LAST_NAV_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as { groupId?: unknown; path?: unknown }
+    if (typeof p.groupId !== 'string' || !p.groupId) return null
+    return { groupId: p.groupId, path: typeof p.path === 'string' ? p.path : '' }
+  } catch {
+    return null
+  }
+}
+
+function writeLastNav(groupId: string, path: string): void {
+  try {
+    localStorage.setItem(LAST_NAV_KEY, JSON.stringify({ groupId, path }))
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function clearLastNav(): void {
+  try {
+    localStorage.removeItem(LAST_NAV_KEY)
+  } catch {
+    /* ignore */
   }
 }
 
@@ -342,6 +372,31 @@ export function Home(): ReactElement {
     }
   }, [nav, snapshot, currentGroup])
 
+  // On launch, reopen the last group folder (or the only group) instead of «Elige un grupo».
+  const restoreTried = useRef(false)
+  useEffect(() => {
+    if (!snapshot || restoreTried.current) return
+    restoreTried.current = true
+    const saved = readLastNav()
+    const savedGroup = saved ? snapshot.groups.find((g) => g.id === saved.groupId) : undefined
+    const target =
+      savedGroup ?? (snapshot.groups.length === 1 ? snapshot.groups[0] : undefined)
+    if (!target || target.state === 'locked') return
+    const path = savedGroup && saved ? saved.path : ''
+    // Only take over while the user is still on the start screen.
+    const open = (p: string): void =>
+      setNav((prev) => (prev.kind === 'root' ? { kind: 'group', groupId: target.id, path: p } : prev))
+    if (!path) {
+      open('')
+      return
+    }
+    void api.listLocal({ groupId: target.id, path }).then((r) => open(r.ok ? path : ''))
+  }, [api, snapshot])
+
+  useEffect(() => {
+    if (nav.kind === 'group') writeLastNav(nav.groupId, nav.path)
+  }, [nav])
+
   useEffect(() => {
     let importClearTimer: number | undefined
     let exportClearTimer: number | undefined
@@ -460,6 +515,19 @@ export function Home(): ReactElement {
     () => sortedEntries.filter((en) => selectedKeys.has(en.path)),
     [sortedEntries, selectedKeys]
   )
+
+  /** Footer count: «3 seleccionados · 12.4 MB» (files only), «5 de 24» with a filter, else «24 elementos». */
+  function itemCountLabel(): string {
+    if (selectedEntries.length > 0) {
+      const n = selectedEntries.length
+      const files = selectedEntries.filter((en) => !en.isDir)
+      const bytes = files.reduce((sum, en) => sum + en.size, 0)
+      const size = files.length > 0 ? ` · ${formatSize(bytes, false)}` : ''
+      return `${n} ${n === 1 ? 'seleccionado' : 'seleccionados'}${size}`
+    }
+    if (filterQuery) return `${visibleEntries.length} de ${entries.length}`
+    return `${entries.length} ${entries.length === 1 ? 'elemento' : 'elementos'}`
+  }
 
   /** Entry path to scroll into view once the list renders it (e.g. right after an import). */
   const pendingRevealRef = useRef<string | null>(null)
@@ -674,6 +742,7 @@ export function Home(): ReactElement {
 
   function onLeftGroup(): void {
     if (groupId) leftOnPurpose.current.add(groupId)
+    clearLastNav()
     setSettingsOpen(false)
     setNav({ kind: 'root' })
     void refreshGroups()
@@ -1335,8 +1404,7 @@ export function Home(): ReactElement {
       items.push({ id: 'import', label: 'Añadir archivos…', onSelect: () => void pickAndImport() })
     }
     items.push(
-      { id: 'revealFolder', label: REVEAL_FOLDER_LABEL, onSelect: () => void revealCurrentFolder() },
-      { id: 'refresh', label: 'Actualizar', onSelect: () => void loadContents({ silent: false }) }
+      { id: 'revealFolder', label: REVEAL_FOLDER_LABEL, onSelect: () => void revealCurrentFolder() }
     )
     return items
   }
@@ -1480,15 +1548,6 @@ export function Home(): ReactElement {
                 onClick={startNewFolder}
               >
                 <FolderPlus size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="finder-tool-btn"
-                aria-label="Actualizar"
-                title="Actualizar"
-                onClick={() => void loadContents({ silent: false })}
-              >
-                <RefreshCw size={ICON_TOOL} strokeWidth={ICON_STROKE} aria-hidden="true" />
               </button>
             </div>
           ) : null}
@@ -1723,6 +1782,20 @@ export function Home(): ReactElement {
                   !listFailed &&
                   renameMode?.kind !== 'create' &&
                   renderEmptyFolder()}
+                {!showLoading && sortedEntries.length === 0 && listFailed && (
+                  <div className="finder-empty" role="alert">
+                    <p className="finder-empty-sub">No se pudo leer esta carpeta.</p>
+                    <div className="finder-empty-actions">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void loadContents({ silent: false })}
+                      >
+                        Reintentar
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {!showLoading &&
                   sortedEntries.length > 0 &&
                   visibleEntries.length === 0 &&
@@ -1881,6 +1954,9 @@ export function Home(): ReactElement {
             })
           )}
         </nav>
+        {nav.kind === 'group' && groupReady && !showLoading ? (
+          <span className="finder-sync-state finder-item-count">{itemCountLabel()}</span>
+        ) : null}
         {currentGroup ? (
           <FooterSyncState group={currentGroup} />
         ) : null}

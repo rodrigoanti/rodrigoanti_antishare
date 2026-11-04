@@ -233,11 +233,15 @@ export class SyncEngine {
         peers: reached,
         files: this.index.liveFileCount(),
         lastSyncAt: Date.now(),
-        error: undefined
+        error: undefined,
+        pending: undefined,
+        done: undefined
       }
       if (scanned > 0 || applied > 0) void this.notifyPeers()
     } catch (err) {
       this.status.state = 'error'
+      this.status.pending = undefined
+      this.status.done = undefined
       this.status.error = err instanceof Error ? err.message : String(err)
       console.error('[sync] round failed', this.status.error)
     } finally {
@@ -323,6 +327,8 @@ export class SyncEngine {
 
   /** Merge one peer's index into ours. Returns how many entries changed locally. */
   private async applyRemote(base: string, remote: SyncIndexResponse): Promise<number> {
+    this.status.pending = this.countPulls(remote)
+    this.status.done = 0
     let applied = 0
     for (const r of remote.entries) {
       if (this.stopped) break
@@ -394,8 +400,49 @@ export class SyncEngine {
     return applied
   }
 
+  /** How many entries of remote applyRemote will download (same branches that end in pull). */
+  private countPulls(remote: SyncIndexResponse): number {
+    let count = 0
+    for (const r of remote.entries) {
+      if (!isValidEntry(r) || r.deleted) continue
+      try {
+        resolveSafe(this.opts.root, r.path)
+      } catch {
+        continue
+      }
+      const l = this.index.entries.get(r.path)
+      if (!l) {
+        count++
+        continue
+      }
+      const order = compareVersions(r.version, l.version)
+      if (order === 'equal' || order === 'less') continue
+      if (order === 'greater') {
+        if (l.deleted || l.hash !== r.hash) count++
+        continue
+      }
+      if (r.hash === l.hash && !l.deleted) continue
+      if (l.deleted || remoteWins(r, l)) count++
+    }
+    return count
+  }
+
   /** Download r into a temp file next to the target, verify the hash, then swap it in. */
   private async pull(
+    base: string,
+    r: SyncEntry,
+    version: SyncEntry['version'],
+    abs: string,
+    l: LocalEntry | undefined
+  ): Promise<boolean> {
+    try {
+      return await this.download(base, r, version, abs, l)
+    } finally {
+      this.status.done = (this.status.done ?? 0) + 1
+    }
+  }
+
+  private async download(
     base: string,
     r: SyncEntry,
     version: SyncEntry['version'],

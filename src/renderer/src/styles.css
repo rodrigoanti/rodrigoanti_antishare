@@ -434,6 +434,10 @@
   flex-shrink: 0;
 }
 
+.finder-statusbar .finder-item-count {
+  font-variant-numeric: tabular-nums;
+}
+
 .transfer-progress {
   position: absolute;
   top: 0;
