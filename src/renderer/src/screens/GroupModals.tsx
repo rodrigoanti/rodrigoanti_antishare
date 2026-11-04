@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactElement, type RefObject } from 'react'
 import type { GroupView } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
-import { Button, Input, Modal, toast } from '../ui'
+import { Button, Input, Modal, PasswordInput, toast } from '../ui'
 
 const MIN_PASSWORD = 4
 
@@ -121,9 +121,8 @@ export function CreateGroupModal({
         </div>
         <div className="field">
           <label htmlFor="group-password">Clave</label>
-          <Input
+          <PasswordInput
             id="group-password"
-            type="password"
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -212,10 +211,9 @@ export function JoinGroupModal({
         </p>
         <div className="field">
           <label htmlFor="join-password">Clave del grupo</label>
-          <Input
+          <PasswordInput
             ref={passwordRef}
             id="join-password"
-            type="password"
             autoComplete="off"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

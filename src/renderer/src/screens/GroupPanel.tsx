@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import type { GroupView, SyncStatus } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
-import { Button, Input, Modal, toast } from '../ui'
+import { Button, Input, Modal, PasswordInput, toast } from '../ui'
 import { NetworkStatus } from './NetworkStatus'
 
 const MIN_PASSWORD = 4
@@ -22,6 +22,36 @@ export function syncSummary(group: GroupView): { label: string; tone: 'ok' | 'bu
   return { label: SYNC_LABEL[state], tone: state === 'idle' ? 'ok' : 'busy' }
 }
 
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+/** How often relative times are refreshed while on screen. */
+const RELATIVE_TICK_MS = 30_000
+
+/** «justo ahora», «hace N min», «hace N h» or the date for anything older than a day. */
+export function formatRelative(ts: number, now: number = Date.now()): string {
+  const diff = Math.max(0, now - ts)
+  if (diff < MINUTE) return 'justo ahora'
+  if (diff < HOUR) return `hace ${Math.floor(diff / MINUTE)} min`
+  if (diff < 24 * HOUR) return `hace ${Math.floor(diff / HOUR)} h`
+  return new Date(ts).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+/** «Última sincronización: hace 3 min», or a clear note when it never happened. */
+export function lastSyncLabel(sync: SyncStatus | null | undefined, now: number = Date.now()): string {
+  if (!sync?.lastSyncAt) return 'Aún no se ha sincronizado'
+  return `Última sincronización: ${formatRelative(sync.lastSyncAt, now)}`
+}
+
+/** Current time, refreshed every 30 s while the caller is mounted. */
+export function useNow(intervalMs: number = RELATIVE_TICK_MS): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs)
+    return () => window.clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
@@ -39,8 +69,11 @@ export function GroupPanel({
   const api = getApi()
   const [name, setName] = useState(group.name)
   const [password, setPassword] = useState('')
+  // Bumped after saving so the field remounts with the password hidden again.
+  const [passwordKey, setPasswordKey] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<Confirm>(null)
+  const now = useNow()
 
   // Follow renames made by other members while the panel stays open.
   useEffect(() => setName(group.name), [group.id, group.name])
@@ -76,7 +109,10 @@ export function GroupPanel({
       () => api.updateGroup({ id: group.id, password }),
       'Clave cambiada. Los demás equipos deberán escribirla.'
     )
-    if (ok) setPassword('')
+    if (ok) {
+      setPassword('')
+      setPasswordKey((k) => k + 1)
+    }
   }
 
   async function changeFolder(): Promise<void> {
@@ -114,6 +150,13 @@ export function GroupPanel({
             </span>
           ) : null}
         </div>
+        {sync ? <p className="url-group-hint">{lastSyncLabel(sync, now)}</p> : null}
+        {sync && sync.conflicts > 0 ? (
+          <p className="url-group-hint group-panel-conflict">
+            Otro equipo editó un archivo a la vez. Compara las dos versiones y borra la que sobre; las copias
+            llevan «(conflicto de…)» en el nombre.
+          </p>
+        ) : null}
         {sync?.error ? <p className="form-error">{sync.error}</p> : null}
         <p className="url-group-hint">
           {group.members.length > 0
@@ -186,10 +229,10 @@ export function GroupPanel({
             void savePassword()
           }}
         >
-          <Input
+          <PasswordInput
+            key={passwordKey}
             id="gp-password-input"
             aria-labelledby="gp-password"
-            type="password"
             autoComplete="new-password"
             value={password}
             placeholder="Nueva clave"

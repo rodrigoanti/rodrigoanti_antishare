@@ -58,7 +58,7 @@ function listLocal(req?: ShareListLocalRequest): ShareListLocalResult {
   const root = rootFor(req?.groupId)
   if (!root) return { ok: false, error: NO_GROUP }
   try {
-    const entries: DirEntry[] = listShareFolder(root, req?.path || '')
+    const entries: DirEntry[] = listShareFolder(root, req?.path || '', manager().authorLookup(req?.groupId))
     return { ok: true, entries, folder: root }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -128,6 +128,18 @@ export function registerIpc(): void {
     return result.filePaths[0]
   })
 
+  ipcMain.handle('share:selectFiles', async () => {
+    // Windows/Linux can't mix files and folders in one dialog (openDirectory wins), so files only there.
+    const result = await dialog.showOpenDialog({
+      properties:
+        process.platform === 'darwin'
+          ? ['openFile', 'openDirectory', 'multiSelections']
+          : ['openFile', 'multiSelections']
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
+
   ipcMain.handle('share:listLocal', async (_e, req?: ShareListLocalRequest) => listLocal(req))
 
   ipcMain.handle('network:diagnose', async () => runNetworkDiagnose({ server, discovery }))
@@ -189,6 +201,18 @@ export function registerIpc(): void {
       const abs = resolveSafe(root, req.path)
       const error = await shell.openPath(abs)
       return error ? { ok: false, error } : { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // Group-scoped reveal: the path is relative and must stay inside the group folder.
+  ipcMain.handle('files:reveal', async (_e, req: FileOpenRequest): Promise<FsOpResult> => {
+    const root = rootFor(req?.groupId)
+    if (!root) return { ok: false, error: NO_GROUP }
+    try {
+      shell.showItemInFolder(resolveSafe(root, req.path))
+      return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

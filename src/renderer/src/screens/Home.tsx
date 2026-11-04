@@ -5,12 +5,11 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement
 } from 'react'
 import {
-  ArrowDown,
   ArrowLeft,
-  ArrowUp,
   FolderPlus,
   FolderSync,
   LayoutGrid,
@@ -19,11 +18,13 @@ import {
   Moon,
   Plus,
   RefreshCw,
+  Search,
   Settings,
   Sun,
+  Trash2,
   Users
 } from 'lucide-react'
-import type { DirEntry, DiscoveredGroup, GroupView } from '../../../shared/types'
+import type { DirEntry, DiscoveredGroup, GroupView, ImportLocalResult } from '../../../shared/types'
 import { getApi, mapIpcError } from '../api'
 import {
   beginInternalFileDrag,
@@ -40,11 +41,11 @@ import {
 } from '../osDrop'
 import { useGroups } from '../groups'
 import { applyTheme, type Theme } from '../theme'
-import { Button, ContextMenu, Modal, SidePanel, toast } from '../ui'
+import { Button, ContextMenu, Input, Modal, SidePanel, toast, type ContextMenuItem } from '../ui'
 import { FolderItem, type FinderViewMode } from '../ui/FolderItem'
 import { fileGlyphKind, FolderIcon } from '../ui/FolderIcon'
 import { CreateGroupModal, JoinGroupModal } from './GroupModals'
-import { GroupPanel, NetworkPanel, syncSummary } from './GroupPanel'
+import { formatRelative, GroupPanel, lastSyncLabel, NetworkPanel, syncSummary, useNow } from './GroupPanel'
 
 const ICON_STROKE = 1.75
 const ICON_TOOL = 15
@@ -56,17 +57,17 @@ type SortKey = 'name' | 'date' | 'size' | 'type'
 type SortDir = 'asc' | 'desc'
 type SortPref = { key: SortKey; dir: SortDir }
 
-const SORT_LABELS: Record<SortKey, string> = {
-  name: 'Nombre',
-  date: 'Fecha',
-  size: 'Tamaño',
-  type: 'Tipo'
-}
-
 type Nav = { kind: 'root' } | { kind: 'group'; groupId: string; path: string }
+/** Drop target folder: a visible subfolder or a breadcrumb ('' = group root). */
+type DropDest = { path: string; name: string }
 
 function navId(n: Nav): string {
   return n.kind === 'group' ? `group:${n.groupId}:${n.path}` : 'root'
+}
+
+/** Case- and accent-insensitive key for the name filter («inf» matches «Informe»). */
+function foldName(value: string): string {
+  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 }
 
 function sortStorageKey(nav: Nav): string {
@@ -133,6 +134,33 @@ function compareEntries(a: DirEntry, b: DirEntry, key: SortKey, dir: SortDir): n
   return dir === 'asc' ? cmp : -cmp
 }
 
+const REVEAL_LABEL = /mac/i.test(navigator.platform) ? 'Mostrar en Finder' : 'Mostrar en el Explorador'
+const REVEAL_FOLDER_LABEL = /mac/i.test(navigator.platform)
+  ? 'Mostrar carpeta en Finder'
+  : 'Mostrar carpeta en el Explorador'
+
+/** Where a delete lands: it goes to the Trash here and on every member that syncs it. */
+function deleteReachLabel(others: number): string {
+  if (others === 0) return 'Se moverá a la Papelera de este equipo.'
+  return 'Se moverá a la Papelera en todos los equipos.'
+}
+
+function deleteTitle(targets: DirEntry[]): string {
+  if (targets.length > 1) return `Eliminar ${targets.length} elementos`
+  return targets[0]?.isDir ? 'Eliminar carpeta' : 'Eliminar archivo'
+}
+
+/** One entry is named; several are counted, noting folders take their contents with them. */
+function deleteQuestion(targets: DirEntry[]): string {
+  if (targets.length === 1) {
+    const [entry] = targets
+    return `¿Eliminar «${entry.name}»${entry.isDir ? ' y todo su contenido' : ''}?`
+  }
+  const folders = targets.filter((en) => en.isDir).length
+  const suffix = folders > 0 ? ' Las carpetas se borran con todo su contenido.' : ''
+  return `¿Eliminar estos ${targets.length} elementos?${suffix}`
+}
+
 /** "1 equipo conectado: PC-Ana" — other members online now (this device not counted). */
 function membersLabel(members: string[]): string {
   if (members.length === 0) return 'Ningún otro equipo conectado'
@@ -161,6 +189,30 @@ function formatSize(bytes: number, isDir: boolean): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+type Xfer = { copied: number; total: number }
+
+function xferPct(x: Xfer | null): number | null {
+  if (!x || x.total <= 0) return null
+  return Math.min(100, Math.floor((x.copied / x.total) * 100))
+}
+
+/** Texto visible: porcentaje exacto y, si se pide, los bytes copiados. */
+function xferLabel(verb: string, x: Xfer | null, withSizes: boolean): string {
+  const pct = xferPct(x)
+  if (x == null || pct == null) return `${verb}…`
+  const sizes = withSizes
+    ? ` (${formatSize(x.copied, false)} de ${formatSize(x.total, false)})`
+    : ''
+  return `${verb}… ${pct} %${sizes}`
+}
+
+/** Texto para lector de pantalla: solo cambia cada 10 % para no saturar. */
+function xferAnnouncement(verb: string, x: Xfer | null): string {
+  const pct = xferPct(x)
+  if (pct == null) return `${verb}…`
+  return `${verb}… ${Math.floor(pct / 10) * 10} %`
+}
+
 function formatMtime(ms: number): string {
   if (!ms) return '—'
   try {
@@ -168,6 +220,32 @@ function formatMtime(ms: number): string {
   } catch {
     return '—'
   }
+}
+
+/** «Modificado por PC-Ana · hace 5 min»; undefined when the device is unknown (date only). */
+function modifiedByTitle(entry: DirEntry): string | undefined {
+  if (!entry.modifiedByName || !entry.mtime) return undefined
+  return `Modificado por ${entry.modifiedByName} · ${formatRelative(entry.mtime)}`
+}
+
+/** Footer sync line; owns its 30 s tick so Home does not re-render for the tooltip. */
+function FooterSyncState({ group }: { group: GroupView }): ReactElement {
+  const now = useNow()
+  const summary = syncSummary(group)
+  return (
+    <span
+      className="finder-sync-state"
+      role="status"
+      aria-live="polite"
+      title={group.sync ? lastSyncLabel(group.sync, now) : undefined}
+    >
+      <span className={`finder-side-dot sync-${summary.tone}`} aria-hidden="true" />
+      {summary.label}
+      {group.members.length > 0
+        ? ` · ${group.members.length} ${group.members.length === 1 ? 'equipo' : 'equipos'}`
+        : ' · solo este equipo'}
+    </span>
+  )
 }
 
 function uniqueNewFolderName(entries: DirEntry[]): string {
@@ -203,19 +281,27 @@ export function Home(): ReactElement {
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [listFailed, setListFailed] = useState(false)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set())
+  /** Last plainly or Cmd/Ctrl-clicked entry; Shift+click extends the range from here. */
+  const selectionAnchorRef = useRef<string | null>(null)
+  /** Entry paths carried by the internal drag in progress (one or the whole selection). */
+  const dragPathsRef = useRef<string[]>([])
   const [busyFile, setBusyFile] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [importXfer, setImportXfer] = useState<{ copied: number; total: number } | null>(null)
   const [exportXfer, setExportXfer] = useState<{ copied: number; total: number } | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const [folderDropPath, setFolderDropPath] = useState<string | null>(null)
+  /** Breadcrumb under the pointer during a drag; label says what a drop would do. */
+  const [crumbDrop, setCrumbDrop] = useState<{ path: string; label: string } | null>(null)
   const [renameMode, setRenameMode] = useState<
     { kind: 'existing'; path: string; value: string } | { kind: 'create'; value: string } | null
   >(null)
-  const [menu, setMenu] = useState<{ x: number; y: number; entry: DirEntry } | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<DirEntry | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: DirEntry | null } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<DirEntry[] | null>(null)
   const [opBusy, setOpBusy] = useState(false)
+  const [filter, setFilter] = useState('')
+  const filterInputRef = useRef<HTMLInputElement>(null)
   const hasLoadedOnce = useRef(false)
   const silentFailStreak = useRef(0)
   /** True while listing fails — used for unstable-connection UX; poll stays at 2s. */
@@ -324,24 +410,82 @@ export function Home(): ReactElement {
     [entries, sort.key, sort.dir]
   )
 
-  function setSortKey(key: SortKey): void {
-    setSort((prev) => {
-      if (prev.key === key) return prev
-      const next: SortPref = {
-        key,
-        dir: key === 'date' || key === 'size' ? 'desc' : 'asc'
-      }
-      writeSortPref(nav, next)
-      return next
-    })
+  const filterQuery = filter.trim()
+  const visibleEntries = useMemo(() => {
+    if (!filterQuery) return sortedEntries
+    const needle = foldName(filterQuery)
+    return sortedEntries.filter((entry) => foldName(entry.name).includes(needle))
+  }, [sortedEntries, filterQuery])
+
+  useEffect(() => {
+    setFilter('')
+  }, [nav])
+
+  /** Replaces the selection with a single entry (or clears it). */
+  function selectOnly(key: string | null): void {
+    selectionAnchorRef.current = key
+    setSelectedKeys(key ? new Set([key]) : new Set())
   }
 
-  function toggleSortDir(): void {
-    setSort((prev) => {
-      const next: SortPref = { ...prev, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-      writeSortPref(nav, next)
-      return next
-    })
+  /** Finder / Explorer: click selects one, Cmd/Ctrl toggles, Shift selects a range of what is visible. */
+  function selectWithModifiers(entry: DirEntry, e: ReactMouseEvent): void {
+    const additive = e.metaKey || e.ctrlKey
+    if (e.shiftKey) {
+      const order = visibleEntries.map((en) => en.path)
+      const from = order.indexOf(selectionAnchorRef.current ?? '')
+      const to = order.indexOf(entry.path)
+      if (from < 0 || to < 0) {
+        selectOnly(entry.path)
+        return
+      }
+      const range = order.slice(Math.min(from, to), Math.max(from, to) + 1)
+      setSelectedKeys((prev) => new Set(additive ? [...prev, ...range] : range))
+      return
+    }
+    selectionAnchorRef.current = entry.path
+    if (additive) {
+      setSelectedKeys((prev) => {
+        const next = new Set(prev)
+        if (next.has(entry.path)) next.delete(entry.path)
+        else next.add(entry.path)
+        return next
+      })
+      return
+    }
+    setSelectedKeys(new Set([entry.path]))
+  }
+
+  /** Selected entries in the order they are shown; drops paths no longer listed. */
+  const selectedEntries = useMemo(
+    () => sortedEntries.filter((en) => selectedKeys.has(en.path)),
+    [sortedEntries, selectedKeys]
+  )
+
+  /** Entry path to scroll into view once the list renders it (e.g. right after an import). */
+  const pendingRevealRef = useRef<string | null>(null)
+  useEffect(() => {
+    const path = pendingRevealRef.current
+    if (!path) return
+    const el = document.querySelector<HTMLElement>(`[data-entry-path="${CSS.escape(path)}"]`)
+    if (!el) return
+    pendingRevealRef.current = null
+    el.scrollIntoView({ block: 'nearest' })
+  }, [visibleEntries])
+
+  /** After an import: warn about renamed duplicates and select the first imported item. */
+  function afterImport(result: ImportLocalResult, destPath: string): void {
+    const renamed = result.renamed ?? []
+    if (renamed.length === 1) {
+      toast.info(`Ya existía «${renamed[0].from}»; se guardó como «${renamed[0].to}»`)
+    } else if (renamed.length > 1) {
+      toast.info(`${renamed.length} archivos ya existían y se guardaron con otro nombre`)
+    }
+    const first = result.names?.[0]
+    if (nav.kind === 'root' || !first || destPath !== nav.path) return
+    if (filterQuery && !foldName(first).includes(foldName(filterQuery))) setFilter('')
+    const key = joinPath(nav.path, first)
+    pendingRevealRef.current = key
+    selectOnly(key)
   }
 
   function cycleSortColumn(key: SortKey): void {
@@ -406,7 +550,7 @@ export function Home(): ReactElement {
     hasLoadedOnce.current = false
     silentFailStreak.current = 0
     connectionUnstable.current = false
-    setSelectedKey(null)
+    selectOnly(null)
     setRenameMode(null)
     setMenu(null)
     setPendingDelete(null)
@@ -443,20 +587,24 @@ export function Home(): ReactElement {
     if (nav.kind !== 'group' || !nav.path) return
     const cut = nav.path.lastIndexOf('/')
     const parent = cut <= 0 ? '' : nav.path.slice(0, cut)
-    setSelectedKey(nav.path)
+    selectOnly(nav.path)
     setNav({ kind: 'group', groupId: nav.groupId, path: parent })
   }
 
   const crumbs = useMemo(() => {
-    const items: { label: string; go: () => void }[] = []
+    const items: { label: string; path: string; go: () => void }[] = []
     if (nav.kind !== 'group') return items
     const id = nav.groupId
-    items.push({ label: currentGroup?.name ?? 'Grupo', go: () => setNav({ kind: 'group', groupId: id, path: '' }) })
+    items.push({
+      label: currentGroup?.name ?? 'Grupo',
+      path: '',
+      go: () => setNav({ kind: 'group', groupId: id, path: '' })
+    })
     let acc = ''
     for (const part of nav.path.split('/').filter(Boolean)) {
       acc = joinPath(acc, part)
       const path = acc
-      items.push({ label: part, go: () => setNav({ kind: 'group', groupId: id, path }) })
+      items.push({ label: part, path, go: () => setNav({ kind: 'group', groupId: id, path }) })
     }
     return items
   }, [nav, currentGroup?.name])
@@ -465,6 +613,16 @@ export function Home(): ReactElement {
     if (nav.kind === 'root') return
     const onKey = (e: KeyboardEvent): void => {
       if (renameMode || pendingDelete || joinTarget || createFolder !== null || settingsOpen || opBusy) return
+      // Finder / Explorer: ⌘F · Ctrl+F focuses the name filter, even from another field.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+        const input = filterInputRef.current
+        if (input) {
+          e.preventDefault()
+          input.focus()
+          input.select()
+        }
+        return
+      }
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       // Finder: ⌘↑ · Explorer: Alt+↑ or Backspace.
@@ -476,25 +634,27 @@ export function Home(): ReactElement {
         goUp()
         return
       }
-      const entry = entries.find((en) => en.path === selectedKey)
-      if (!entry) return
+      if (e.key === 'Delete' && selectedEntries.length > 0) {
+        e.preventDefault()
+        setPendingDelete(selectedEntries)
+        return
+      }
+      if (selectedEntries.length !== 1) return
+      const entry = selectedEntries[0]
       if (e.key === 'Enter') {
         e.preventDefault()
         void openEntry(entry)
       } else if (e.key === 'F2') {
         e.preventDefault()
         beginRename(entry)
-      } else if (e.key === 'Delete') {
-        e.preventDefault()
-        setPendingDelete(entry)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [nav, renameMode, pendingDelete, joinTarget, createFolder, settingsOpen, opBusy, entries, selectedKey])
+  }, [nav, renameMode, pendingDelete, joinTarget, createFolder, settingsOpen, opBusy, selectedEntries])
 
   function openGroup(group: GroupView): void {
-    setSelectedKey(null)
+    selectOnly(null)
     if (group.state === 'locked') {
       setJoinTarget({ id: group.id, name: group.name, members: group.members, folder: group.folder, locked: true })
     }
@@ -527,7 +687,7 @@ export function Home(): ReactElement {
   function beginRename(entry: DirEntry): void {
     renameCommitLock.current = false
     setMenu(null)
-    setSelectedKey(entry.path)
+    selectOnly(entry.path)
     setRenameMode({ kind: 'existing', path: entry.path, value: entry.name })
   }
 
@@ -568,7 +728,7 @@ export function Home(): ReactElement {
         return
       }
       setRenameMode(null)
-      setSelectedKey(joinPath(nav.path, name))
+      selectOnly(joinPath(nav.path, name))
       toast.success(creating ? 'Carpeta creada' : 'Renombrado')
       const refreshed = await loadContents({ silent: true })
       if (!refreshed) toast.error('No se pudo actualizar el listado.')
@@ -585,28 +745,37 @@ export function Home(): ReactElement {
     }
   }
 
+  /** Removes the pending entries one by one; stops at the first failure and keeps the rest pending. */
   async function confirmDelete(): Promise<void> {
-    if (!pendingDelete || nav.kind === 'root') return
-    const entry = pendingDelete
+    if (!pendingDelete || pendingDelete.length === 0 || nav.kind === 'root') return
+    const targets = pendingDelete
+    const removed = new Set<string>()
     setOpBusy(true)
     try {
-      const result = await api.removeLocal({ groupId, path: entry.path })
-      if (!result.ok) {
-        toast.error(mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`))
-        return
+      for (const entry of targets) {
+        let error: string | undefined
+        try {
+          const result = await api.removeLocal({ groupId, path: entry.path })
+          if (!result.ok) error = mapIpcError(result.error, `No se pudo eliminar «${entry.name}».`)
+        } catch (err) {
+          error = mapIpcError(
+            err instanceof Error ? err.message : String(err),
+            `No se pudo eliminar «${entry.name}».`
+          )
+        }
+        if (error) {
+          toast.error(error)
+          break
+        }
+        removed.add(entry.path)
       }
-      setPendingDelete(null)
-      if (selectedKey === entry.path) setSelectedKey(null)
-      toast.success('Eliminado')
+      if (removed.size === 0) return
+      const left = targets.filter((en) => !removed.has(en.path))
+      setPendingDelete(left.length > 0 ? left : null)
+      setSelectedKeys((prev) => new Set([...prev].filter((key) => !removed.has(key))))
+      toast.success(removed.size === 1 ? 'Eliminado' : `${removed.size} elementos eliminados`)
       const refreshed = await loadContents({ silent: true })
       if (!refreshed) toast.error('No se pudo actualizar el listado.')
-    } catch (err) {
-      toast.error(
-        mapIpcError(
-          err instanceof Error ? err.message : String(err),
-          `No se pudo eliminar «${entry.name}».`
-        )
-      )
     } finally {
       setOpBusy(false)
     }
@@ -619,8 +788,36 @@ export function Home(): ReactElement {
     }
   }
 
+  async function revealEntry(entry: DirEntry): Promise<void> {
+    if (nav.kind !== 'group') return
+    const result = await api.revealFile({ groupId: nav.groupId, path: entry.path })
+    if (!result.ok) toast.error(mapIpcError(result.error, `No se pudo mostrar «${entry.name}».`))
+  }
+
+  async function revealCurrentFolder(): Promise<void> {
+    if (nav.kind !== 'group') return
+    const result = await api.revealFile({ groupId: nav.groupId, path: nav.path })
+    if (!result.ok) toast.error(mapIpcError(result.error, 'No se pudo mostrar la carpeta.'))
+  }
+
+  /** A click on empty space (not on an entry or a control) clears the selection. */
+  function handleBackgroundClick(e: ReactMouseEvent<HTMLDivElement>): void {
+    if (renameMode) return
+    const target = e.target as HTMLElement
+    if (target.closest('button, input, a, [role="group"]')) return
+    selectOnly(null)
+  }
+
+  function handleBackgroundContextMenu(e: ReactMouseEvent<HTMLDivElement>): void {
+    // Items open their own menu and call preventDefault; only the empty area lands here.
+    if (e.defaultPrevented || renameMode) return
+    e.preventDefault()
+    selectOnly(null)
+    setMenu({ x: e.clientX, y: e.clientY, entry: null })
+  }
+
   async function openEntry(entry: DirEntry): Promise<void> {
-    setSelectedKey(entry.path)
+    selectOnly(entry.path)
     if (nav.kind !== 'group') return
     if (entry.isDir) {
       setNav({ kind: 'group', groupId: nav.groupId, path: entry.path || joinPath(nav.path, entry.name) })
@@ -639,8 +836,23 @@ export function Home(): ReactElement {
       e.preventDefault()
       return
     }
+    // Dragging part of a multi-selection carries all of it; any other entry drags alone.
+    const carried =
+      selectedKeys.has(entry.path) && selectedEntries.length > 1
+        ? selectedEntries.map((en) => en.path)
+        : [entry.path]
+    if (carried.length === 1) selectOnly(entry.path)
+    dragPathsRef.current = carried
     markInternalDrag(e.dataTransfer)
     beginInternalFileDrag(nav.path || '', entry.path)
+  }
+
+  /** Paths of the internal drag in progress; falls back to the single tracked source. */
+  function internalDragPaths(): string[] {
+    const srcPath = getInternalDragSourcePath()
+    if (!srcPath) return []
+    const carried = dragPathsRef.current
+    return carried.includes(srcPath) ? carried : [srcPath]
   }
 
   async function saveEntryAs(entry: DirEntry): Promise<void> {
@@ -701,6 +913,7 @@ export function Home(): ReactElement {
     const end = (): void => {
       endInternalFileDrag()
       setFolderDropPath(null)
+      setCrumbDrop(null)
       restoreRendererFocus()
     }
     // dragend: capture. drop: bubble so pane handlers see the flag first.
@@ -716,6 +929,7 @@ export function Home(): ReactElement {
     dropDepthRef.current = 0
     setDropActive(false)
     setFolderDropPath(null)
+    setCrumbDrop(null)
   }, [nav])
 
   /** Internal drag whose source parent is the folder currently open. */
@@ -732,14 +946,13 @@ export function Home(): ReactElement {
   }
 
   /** Whether dest folder can accept the current drag (internal move or OS import). */
-  function folderDropEffect(dest: DirEntry, e: DragEvent): 'move' | 'copy' | null {
-    if (!dest.isDir || nav.kind === 'root' || !groupReady || importing || opBusy) return null
+  function folderDropEffect(dest: DropDest, e: DragEvent): 'move' | 'copy' | null {
+    if (nav.kind === 'root' || !groupReady || importing || opBusy) return null
 
     if (isInternalFileDragActive()) {
-      const srcPath = getInternalDragSourcePath()
-      if (!srcPath) return null
-      if (srcPath === dest.path) return null
-      if (isSharePathInsideOrEqual(srcPath, dest.path)) return null
+      const srcPaths = internalDragPaths()
+      if (srcPaths.length === 0) return null
+      if (srcPaths.some((src) => isSharePathInsideOrEqual(src, dest.path))) return null
       const srcParent = getInternalDragSourceParent()
       if (srcParent !== null && srcParent === dest.path) return null
       e.preventDefault()
@@ -758,7 +971,7 @@ export function Home(): ReactElement {
     return 'copy'
   }
 
-  function handleFolderDragOver(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+  function handleFolderDragOver(dest: DropDest, e: DragEvent<HTMLButtonElement>): void {
     e.stopPropagation()
     const effect = folderDropEffect(dest, e)
     if (!effect) {
@@ -770,7 +983,7 @@ export function Home(): ReactElement {
     setDropActive(false)
   }
 
-  function handleFolderDragLeave(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+  function handleFolderDragLeave(dest: DropDest, e: DragEvent<HTMLButtonElement>): void {
     e.stopPropagation()
     const related = e.relatedTarget
     if (related instanceof Node && e.currentTarget.contains(related)) return
@@ -797,6 +1010,7 @@ export function Home(): ReactElement {
           : `${sources.length} importados en «${destName}»`
       )
       await loadContents({ silent: true })
+      afterImport(result, destPath)
     } catch (err) {
       toast.error(
         mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
@@ -806,31 +1020,42 @@ export function Home(): ReactElement {
     }
   }
 
-  async function moveInternalToFolder(dest: DirEntry): Promise<void> {
+  /** Moves every dragged entry with the existing single move, one by one; stops at the first failure. */
+  async function moveInternalToFolder(dest: DropDest): Promise<void> {
     if (nav.kind === 'root') return
-    const srcPath = getInternalDragSourcePath()
-    if (!srcPath) return
-    const srcName = srcPath.includes('/') ? srcPath.slice(srcPath.lastIndexOf('/') + 1) : srcPath
+    const srcPaths = internalDragPaths()
+    if (srcPaths.length === 0) return
+    const moved = new Set<string>()
     setOpBusy(true)
     try {
-      const result = await api.moveLocal({ groupId, path: srcPath, destPath: dest.path })
-      if (!result.ok) {
-        toast.error(mapIpcError(result.error, `No se pudo mover «${srcName}».`))
-        return
+      for (const srcPath of srcPaths) {
+        const srcName = srcPath.includes('/') ? srcPath.slice(srcPath.lastIndexOf('/') + 1) : srcPath
+        let error: string | undefined
+        try {
+          const result = await api.moveLocal({ groupId, path: srcPath, destPath: dest.path })
+          if (!result.ok) error = mapIpcError(result.error, `No se pudo mover «${srcName}».`)
+        } catch (err) {
+          error = mapIpcError(err instanceof Error ? err.message : String(err), `No se pudo mover «${srcName}».`)
+        }
+        if (error) {
+          toast.error(error)
+          break
+        }
+        moved.add(srcPath)
       }
-      if (selectedKey === srcPath) setSelectedKey(null)
-      toast.success(`Movido a «${dest.name}»`)
-      await loadContents({ silent: true })
-    } catch (err) {
-      toast.error(
-        mapIpcError(err instanceof Error ? err.message : String(err), `No se pudo mover «${srcName}».`)
+      if (moved.size === 0) return
+      setSelectedKeys((prev) => new Set([...prev].filter((key) => !moved.has(key))))
+      toast.success(
+        moved.size === 1 ? `Movido a «${dest.name}»` : `${moved.size} elementos movidos a «${dest.name}»`
       )
+      await loadContents({ silent: true })
     } finally {
+      dragPathsRef.current = []
       setOpBusy(false)
     }
   }
 
-  function handleFolderDrop(dest: DirEntry, e: DragEvent<HTMLButtonElement>): void {
+  function handleFolderDrop(dest: DropDest, e: DragEvent<HTMLButtonElement>): void {
     e.preventDefault()
     e.stopPropagation()
     const effect = folderDropEffect(dest, e)
@@ -838,6 +1063,7 @@ export function Home(): ReactElement {
     dropDepthRef.current = 0
     setDropActive(false)
     setFolderDropPath(null)
+    setCrumbDrop(null)
 
     if (!effect) return
 
@@ -847,6 +1073,49 @@ export function Home(): ReactElement {
     }
     if (importing || !dt) return
     void importOsDropTo(dt, dest.path, dest.name)
+  }
+
+  /** Breadcrumb drop: same rules as a folder; the open folder never accepts. */
+  function crumbDropEffect(dest: DropDest, isCurrent: boolean, e: DragEvent): 'move' | 'copy' | null {
+    e.stopPropagation()
+    const effect = isCurrent ? null : folderDropEffect(dest, e)
+    if (!effect) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'none'
+    }
+    return effect
+  }
+
+  function handleCrumbDragOver(dest: DropDest, isCurrent: boolean, e: DragEvent<HTMLButtonElement>): void {
+    const effect = crumbDropEffect(dest, isCurrent, e)
+    if (!effect && !isInternalFileDragActive() && !isOsFileDrag(e.dataTransfer)) {
+      setCrumbDrop(null)
+      return
+    }
+    setFolderDropPath(effect ? dest.path : null)
+    setCrumbDrop({
+      path: dest.path,
+      label: effect === 'move' ? 'Mover aquí' : effect === 'copy' ? 'Importar aquí' : 'No disponible'
+    })
+    setDropActive(false)
+  }
+
+  function handleCrumbDragLeave(dest: DropDest, e: DragEvent<HTMLButtonElement>): void {
+    handleFolderDragLeave(dest, e)
+    const related = e.relatedTarget
+    if (related instanceof Node && e.currentTarget.contains(related)) return
+    setCrumbDrop((cur) => (cur?.path === dest.path ? null : cur))
+  }
+
+  function handleCrumbDrop(dest: DropDest, isCurrent: boolean, e: DragEvent<HTMLButtonElement>): void {
+    if (isCurrent) {
+      e.preventDefault()
+      e.stopPropagation()
+      setFolderDropPath(null)
+      setCrumbDrop(null)
+      return
+    }
+    handleFolderDrop(dest, e)
   }
 
   function rejectDropVisual(e: DragEvent): void {
@@ -895,6 +1164,24 @@ export function Home(): ReactElement {
       toast.error('No se pudo leer la ruta local.')
       return
     }
+    await importSources(sources)
+  }
+
+  async function pickAndImport(): Promise<void> {
+    if (nav.kind === 'root' || importing) return
+    try {
+      const sources = await api.selectFiles()
+      if (sources.length > 0) await importSources(sources)
+    } catch (err) {
+      toast.error(
+        mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo abrir el selector.')
+      )
+    }
+  }
+
+  /** Imports local paths into the open folder; shared by drop and the «Añadir archivos» picker. */
+  async function importSources(sources: string[]): Promise<void> {
+    if (nav.kind === 'root') return
     setImporting(true)
     try {
       const result = await api.importLocal({ groupId, sources, destPath: nav.path || undefined })
@@ -904,6 +1191,7 @@ export function Home(): ReactElement {
       }
       toast.success(sources.length === 1 ? 'Importado' : `${sources.length} importados`)
       await loadContents({ silent: true })
+      afterImport(result, nav.path)
     } catch (err) {
       toast.error(
         mapIpcError(err instanceof Error ? err.message : String(err), 'No se pudo importar.')
@@ -1001,19 +1289,56 @@ export function Home(): ReactElement {
           </span>
           <h2 className="finder-empty-title">Esta carpeta está vacía</h2>
           <p className="finder-empty-sub">
-            Arrastra archivos aquí o crea una carpeta nueva para empezar.
+            Arrastra archivos aquí o usa el botón +, o crea una carpeta nueva.
           </p>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={startNewFolder}
-            disabled={opBusy || Boolean(renameMode)}
-          >
-            Nueva carpeta
-          </Button>
+          <div className="finder-empty-actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={startNewFolder}
+              disabled={opBusy || Boolean(renameMode)}
+            >
+              Nueva carpeta
+            </Button>
+          </div>
         </div>
       </div>
     )
+  }
+
+  function entryMenuItems(entry: DirEntry): ContextMenuItem[] {
+    if (selectedKeys.has(entry.path) && selectedEntries.length > 1) {
+      const targets = selectedEntries
+      return [
+        { id: 'reveal', label: REVEAL_LABEL, onSelect: () => void revealEntry(entry) },
+        {
+          id: 'delete',
+          label: `Eliminar ${targets.length} elementos`,
+          danger: true,
+          onSelect: () => setPendingDelete(targets)
+        }
+      ]
+    }
+    return [
+      { id: 'open', label: 'Abrir', onSelect: () => void openEntry(entry) },
+      { id: 'reveal', label: REVEAL_LABEL, onSelect: () => void revealEntry(entry) },
+      { id: 'saveAs', label: 'Guardar como…', onSelect: () => void saveEntryAs(entry) },
+      { id: 'rename', label: 'Renombrar', onSelect: () => beginRename(entry) },
+      { id: 'delete', label: 'Eliminar', danger: true, onSelect: () => setPendingDelete([entry]) }
+    ]
+  }
+
+  function backgroundMenuItems(): ContextMenuItem[] {
+    const items: ContextMenuItem[] = []
+    if (!opBusy) items.push({ id: 'newFolder', label: 'Nueva carpeta', onSelect: startNewFolder })
+    if (!importing && !opBusy) {
+      items.push({ id: 'import', label: 'Añadir archivos…', onSelect: () => void pickAndImport() })
+    }
+    items.push(
+      { id: 'revealFolder', label: REVEAL_FOLDER_LABEL, onSelect: () => void revealCurrentFolder() },
+      { id: 'refresh', label: 'Actualizar', onSelect: () => void loadContents({ silent: false }) }
+    )
+    return items
   }
 
   function renderWelcome(): ReactElement {
@@ -1126,8 +1451,19 @@ export function Home(): ReactElement {
             </button>
           ) : null}
           {importing ? (
-            <span className="finder-import-status" role="status" aria-live="polite">
-              Importando…
+            <span className="finder-import-status">
+              <span aria-hidden="true">{xferLabel('Importando', importXfer, true)}</span>
+              <span className="sr-only" role="status" aria-live="polite">
+                {xferAnnouncement('Importando', importXfer)}
+              </span>
+            </span>
+          ) : null}
+          {exportXfer && exportXfer.copied < exportXfer.total ? (
+            <span className="finder-import-status">
+              <span aria-hidden="true">{xferLabel('Guardando', exportXfer, false)}</span>
+              <span className="sr-only" role="status" aria-live="polite">
+                {xferAnnouncement('Guardando', exportXfer)}
+              </span>
             </span>
           ) : null}
         </div>
@@ -1156,40 +1492,30 @@ export function Home(): ReactElement {
               </button>
             </div>
           ) : null}
-          <div className="finder-sort" role="group" aria-label="Orden">
-            <label className="finder-sort-label" htmlFor="finder-sort-key">
-              Orden
-            </label>
-            <select
-              id="finder-sort-key"
-              className="finder-sort-select"
-              value={sort.key}
-              aria-label="Criterio de orden"
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-            >
-              {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
-                <option key={k} value={k}>
-                  {SORT_LABELS[k]}
-                </option>
-              ))}
-            </select>
-            {/* List view: column headers already flip the direction. */}
-            {viewMode === 'icons' ? (
-              <button
-                type="button"
-                className="finder-tool-btn"
-                aria-label={sort.dir === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
-                title={sort.dir === 'asc' ? 'Ascendente' : 'Descendente'}
-                onClick={toggleSortDir}
-              >
-                {sort.dir === 'asc' ? (
-                  <ArrowUp size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-                ) : (
-                  <ArrowDown size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-                )}
-              </button>
-            ) : null}
-          </div>
+          {nav.kind === 'group' && groupReady ? (
+            <div className="finder-search" role="search">
+              <Input
+                ref={filterInputRef}
+                type="search"
+                inputSize="sm"
+                value={filter}
+                placeholder="Filtrar"
+                aria-label="Filtrar archivos por nombre"
+                title={`Filtrar (${api.platform === 'darwin' ? '⌘F' : 'Ctrl+F'})`}
+                spellCheck={false}
+                autoComplete="off"
+                leftIcon={<Search size={13} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                onChange={(e) => setFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Escape') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (filter) setFilter('')
+                  else e.currentTarget.blur()
+                }}
+              />
+            </div>
+          ) : null}
           <div className="finder-view-toggle" role="group" aria-label="Vista">
             <button
               type="button"
@@ -1318,6 +1644,18 @@ export function Home(): ReactElement {
         </aside>
 
         <div className="finder-pane">
+          {nav.kind === 'group' && groupReady ? (
+            <button
+              type="button"
+              className="finder-fab"
+              aria-label="Añadir archivos"
+              title="Añadir archivos"
+              disabled={importing || opBusy || Boolean(renameMode)}
+              onClick={() => void pickAndImport()}
+            >
+              <Plus size={22} strokeWidth={2.25} aria-hidden="true" />
+            </button>
+          ) : null}
           <div
             className="finder-content"
             onScroll={(e) => setContentScrolled((e.currentTarget as HTMLDivElement).scrollTop > 4)}
@@ -1333,11 +1671,13 @@ export function Home(): ReactElement {
                 onDragOver={handleOsDragOver}
                 onDragLeave={handleOsDragLeave}
                 onDrop={handleOsDrop}
+                onContextMenu={handleBackgroundContextMenu}
+                onClick={handleBackgroundClick}
               >
                 {showLoading && <div className="state-box">Cargando…</div>}
                 {!showLoading &&
                   viewMode === 'list' &&
-                  (sortedEntries.length > 0 || renameMode?.kind === 'create') && (
+                  (visibleEntries.length > 0 || renameMode?.kind === 'create') && (
                     <div className="finder-list-head" role="row">
                       <span />
                       <button
@@ -1355,23 +1695,27 @@ export function Home(): ReactElement {
                         aria-label={`Ordenar por tipo${sort.key === 'type' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
                         onClick={() => cycleSortColumn('type')}
                       >
-                        Estado
+                        Tipo
                         {sort.key === 'type' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
                       </button>
                       <button
                         type="button"
-                        className={`finder-list-sort${sort.key === 'date' || sort.key === 'size' ? ' on' : ''}`}
-                        aria-label={`Ordenar por fecha${sort.key === 'date' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
+                        className={`finder-list-sort${sort.key === 'date' ? ' on' : ''}`}
+                        aria-label={`Ordenar por fecha de modificación${sort.key === 'date' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
                         onClick={() => cycleSortColumn('date')}
                       >
-                        Modificado / tamaño
-                        {sort.key === 'date' || sort.key === 'size'
-                          ? sort.dir === 'asc'
-                            ? ' ↑'
-                            : ' ↓'
-                          : ''}
+                        Modificado
+                        {sort.key === 'date' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
                       </button>
-                      <span />
+                      <button
+                        type="button"
+                        className={`finder-list-sort finder-list-sort-end${sort.key === 'size' ? ' on' : ''}`}
+                        aria-label={`Ordenar por tamaño${sort.key === 'size' ? `, ${sort.dir === 'asc' ? 'ascendente' : 'descendente'}` : ''}`}
+                        onClick={() => cycleSortColumn('size')}
+                      >
+                        Tamaño
+                        {sort.key === 'size' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                      </button>
                     </div>
                   )}
                 {!showLoading &&
@@ -1379,7 +1723,15 @@ export function Home(): ReactElement {
                   !listFailed &&
                   renameMode?.kind !== 'create' &&
                   renderEmptyFolder()}
-                {!showLoading && (sortedEntries.length > 0 || renameMode?.kind === 'create') && (
+                {!showLoading &&
+                  sortedEntries.length > 0 &&
+                  visibleEntries.length === 0 &&
+                  renameMode?.kind !== 'create' && (
+                    <div className="finder-empty finder-no-results" role="status">
+                      <p className="finder-empty-sub">Sin resultados para «{filterQuery}»</p>
+                    </div>
+                  )}
+                {!showLoading && (visibleEntries.length > 0 || renameMode?.kind === 'create') && (
                   <ul
                     className={viewMode === 'icons' ? 'finder-icons' : 'finder-list'}
                     aria-label="Contenido"
@@ -1399,13 +1751,14 @@ export function Home(): ReactElement {
                         />
                       </li>
                     ) : null}
-                    {sortedEntries.map((entry) => (
+                    {visibleEntries.map((entry) => (
                       <li key={entry.path}>
                         <FolderItem
+                          data-entry-path={entry.path}
                           viewMode={viewMode}
                           name={entry.isDir ? `${entry.name}` : entry.name}
                           kind={entry.isDir ? 'folder' : 'file'}
-                          selected={selectedKey === entry.path}
+                          selected={selectedKeys.has(entry.path)}
                           renaming={renameMode?.kind === 'existing' && renameMode.path === entry.path}
                           renameValue={
                             renameMode?.kind === 'existing' && renameMode.path === entry.path
@@ -1429,11 +1782,13 @@ export function Home(): ReactElement {
                               ? formatMtime(entry.mtime)
                               : `${formatSize(entry.size, false)} · ${formatMtime(entry.mtime)}`
                           }
+                          dateLabel={formatMtime(entry.mtime)}
+                          dateTitle={modifiedByTitle(entry)}
                           sizeLabel={formatSize(entry.size, entry.isDir)}
                           dropActive={folderDropPath === entry.path}
-                          onClick={() => {
+                          onClick={(e) => {
                             if (renameMode) return
-                            setSelectedKey(entry.path)
+                            selectWithModifiers(entry, e)
                           }}
                           onDoubleClick={() => {
                             if (renameMode) return
@@ -1441,7 +1796,7 @@ export function Home(): ReactElement {
                           }}
                           onContextMenu={(e) => {
                             e.preventDefault()
-                            setSelectedKey(entry.path)
+                            if (!selectedKeys.has(entry.path)) selectOnly(entry.path)
                             setMenu({ x: e.clientX, y: e.clientY, entry })
                           }}
                           onDragStart={(e) => handleEntryDragStart(entry, e)}
@@ -1497,31 +1852,37 @@ export function Home(): ReactElement {
               Grupos
             </span>
           ) : (
-            crumbs.map((c, i) => (
-              <span key={`${c.label}-${i}`} className="finder-crumb-wrap">
-                {i > 0 && <span className="crumb-sep">›</span>}
-                <button
-                  type="button"
-                  className={`finder-crumb${i === crumbs.length - 1 ? ' current' : ''}`}
-                  onClick={c.go}
-                >
-                  <span className="finder-crumb-icon">
-                    <FolderIcon size="sm" />
-                  </span>
-                  {c.label}
-                </button>
-              </span>
-            ))
+            crumbs.map((c, i) => {
+              const isCurrent = i === crumbs.length - 1
+              const dest: DropDest = { path: c.path, name: c.label }
+              const hint = crumbDrop?.path === c.path ? crumbDrop.label : null
+              return (
+                <span key={`${c.label}-${i}`} className="finder-crumb-wrap">
+                  {i > 0 && <span className="crumb-sep">›</span>}
+                  <button
+                    type="button"
+                    className={`finder-crumb${isCurrent ? ' current' : ''}${
+                      folderDropPath === c.path ? ' drop-active' : ''
+                    }${hint && folderDropPath !== c.path ? ' drop-rejected' : ''}`}
+                    onClick={c.go}
+                    onDragEnter={(e) => handleCrumbDragOver(dest, isCurrent, e)}
+                    onDragOver={(e) => handleCrumbDragOver(dest, isCurrent, e)}
+                    onDragLeave={(e) => handleCrumbDragLeave(dest, e)}
+                    onDrop={(e) => handleCrumbDrop(dest, isCurrent, e)}
+                  >
+                    <span className="finder-crumb-icon">
+                      <FolderIcon size="sm" />
+                    </span>
+                    {c.label}
+                    {hint ? <span className="finder-crumb-hint">{hint}</span> : null}
+                  </button>
+                </span>
+              )
+            })
           )}
         </nav>
         {currentGroup ? (
-          <span className="finder-sync-state" role="status" aria-live="polite">
-            <span className={`finder-side-dot sync-${syncSummary(currentGroup).tone}`} aria-hidden="true" />
-            {syncSummary(currentGroup).label}
-            {currentGroup.members.length > 0
-              ? ` · ${currentGroup.members.length} ${currentGroup.members.length === 1 ? 'equipo' : 'equipos'}`
-              : ' · solo este equipo'}
-          </span>
+          <FooterSyncState group={currentGroup} />
         ) : null}
       </footer>
 
@@ -1531,31 +1892,11 @@ export function Home(): ReactElement {
         y={menu?.y ?? 0}
         onClose={() => setMenu(null)}
         items={
-          menu
-            ? [
-                {
-                  id: 'open',
-                  label: 'Abrir',
-                  onSelect: () => void openEntry(menu.entry)
-                },
-                {
-                  id: 'saveAs',
-                  label: 'Guardar como…',
-                  onSelect: () => void saveEntryAs(menu.entry)
-                },
-                {
-                  id: 'rename',
-                  label: 'Renombrar',
-                  onSelect: () => beginRename(menu.entry)
-                },
-                {
-                  id: 'delete',
-                  label: 'Eliminar',
-                  danger: true,
-                  onSelect: () => setPendingDelete(menu.entry)
-                }
-              ]
-            : []
+          menu?.entry
+            ? entryMenuItems(menu.entry)
+            : menu
+              ? backgroundMenuItems()
+              : []
         }
       />
 
@@ -1564,7 +1905,7 @@ export function Home(): ReactElement {
         onClose={() => {
           if (!opBusy) setPendingDelete(null)
         }}
-        title="Eliminar"
+        title={deleteTitle(pendingDelete ?? [])}
         size="sm"
         footer={
           <>
@@ -1577,9 +1918,17 @@ export function Home(): ReactElement {
           </>
         }
       >
-        <p className="panel-sub" style={{ margin: 0 }}>
-          {pendingDelete ? `¿Eliminar «${pendingDelete.name}»?` : null}
-        </p>
+        {pendingDelete && pendingDelete.length > 0 ? (
+          <div className="delete-confirm">
+            <p className="panel-sub" style={{ margin: 0 }}>
+              {deleteQuestion(pendingDelete)}
+            </p>
+            <p className="delete-reach">
+              <Users size={15} aria-hidden="true" />
+              <span>{deleteReachLabel(currentGroup?.members.length ?? 0)}</span>
+            </p>
+          </div>
+        ) : null}
       </Modal>
 
       <CreateGroupModal

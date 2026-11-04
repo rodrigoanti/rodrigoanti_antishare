@@ -86,6 +86,11 @@
   background: color-mix(in srgb, var(--color-danger-soft) 50%, var(--color-surface));
 }
 
+.info {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border-subtle));
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+}
+
 @keyframes toastIn {
   from {
     opacity: 0;

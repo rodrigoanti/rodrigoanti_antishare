@@ -31,12 +31,15 @@ export function NetworkStatus(): ReactElement {
     setBusy(false)
   }
 
+  // Los fallos van primero para que el problema se vea sin desplazarse.
+  const sortedChecks = result ? [...result.checks].sort((a, b) => Number(a.ok) - Number(b.ok)) : []
+
   return (
     <section className="network-status" aria-labelledby="network-status-title">
       <div className="network-status-head">
         <h3 id="network-status-title">Estado de red</h3>
         <Button variant="secondary" size="sm" onClick={() => void runDiagnose()} loading={busy}>
-          Comprobar acceso
+          Comprobar conexión
         </Button>
       </div>
 
@@ -56,7 +59,7 @@ export function NetworkStatus(): ReactElement {
           </Alert>
 
           <ul className="network-checks" aria-label="Comprobaciones de red">
-            {result.checks.map((check) => (
+            {sortedChecks.map((check) => (
               <li key={check.id} className={`network-check network-check-${checkVariant(check)}`}>
                 <span className="network-check-mark" aria-hidden="true">
                   {check.ok ? '✓' : '✗'}
@@ -78,7 +81,7 @@ export function NetworkStatus(): ReactElement {
 
       {!result && !error && !busy && (
         <p className="network-status-idle muted">
-          Comprueba si el share, la IP LAN, HTTP y el descubrimiento UDP están listos.
+          Comprueba si este equipo puede ver y ser visto por los demás equipos de tu red.
         </p>
       )}
     </section>

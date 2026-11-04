@@ -4,9 +4,18 @@ import type { DirEntry } from '../shared/types'
 import { isInsideRoot, resolveSafe } from './pathSafe'
 import { SYNC_TEMP_PREFIX } from './syncIndex'
 
+/** Name of the device that last changed a share-relative file, if known. */
+export type AuthorLookup = (path: string) => string | undefined
+
 /** List directory under share root with symlink-safe resolveSafe. */
-export function listShareFolder(root: string, relPath: string = ''): DirEntry[] {
-  return listDir(root, relPath)
+export function listShareFolder(root: string, relPath: string = '', authorOf?: AuthorLookup): DirEntry[] {
+  const entries = listDir(root, relPath)
+  if (!authorOf) return entries
+  return entries.map((e) => {
+    if (e.isDir) return e
+    const modifiedByName = authorOf(e.path)
+    return modifiedByName ? { ...e, modifiedByName } : e
+  })
 }
 
 function listDir(root: string, relPath: string): DirEntry[] {

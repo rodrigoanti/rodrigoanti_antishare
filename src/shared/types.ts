@@ -6,6 +6,8 @@ export interface DirEntry {
   isDir: boolean
   size: number
   mtime: number
+  /** Device that last changed this file, per the group's sync index («este equipo» for ours). */
+  modifiedByName?: string
 }
 
 export interface Peer {
@@ -226,6 +228,10 @@ export interface ImportLocalRequest {
 export interface ImportLocalResult {
   ok: boolean
   imported?: number
+  /** Final names written in the destination folder, in source order. */
+  names?: string[]
+  /** Sources saved under another name because the original already existed. */
+  renamed?: { from: string; to: string }[]
   error?: string
 }
 
@@ -287,6 +293,8 @@ export interface AntishareApi {
   /** Absolute OS path of a dropped File ('' when it has none, e.g. browser-generated data). */
   getPathForFile: (file: File) => string
   selectFolder: () => Promise<string | null>
+  /** Files (and folders on macOS) picked to import; [] when canceled. */
+  selectFiles: () => Promise<string[]>
   listLocal: (req?: ShareListLocalRequest) => Promise<ShareListLocalResult>
   diagnoseNetwork: () => Promise<NetworkDiagnoseResult>
   listGroups: () => Promise<GroupsSnapshot>
@@ -307,5 +315,7 @@ export interface AntishareApi {
   moveLocal: (req: FsMoveRequest) => Promise<FsOpResult>
   removeLocal: (req: FsRemoveRequest) => Promise<FsOpResult>
   openFile: (req: FileOpenRequest) => Promise<FsOpResult>
+  /** Show a group entry selected in Finder/Explorer. */
+  revealFile: (req: FileOpenRequest) => Promise<FsOpResult>
   showItemInFolder: (filePath: string) => Promise<{ ok: boolean; error?: string }>
 }

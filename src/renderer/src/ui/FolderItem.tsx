@@ -5,6 +5,30 @@ import styles from './FolderItem.module.css'
 
 export type FinderViewMode = 'icons' | 'list'
 
+/** Matches copies made by syncEngine: «<nombre> (conflicto de <equipo> <fecha>)<ext>». */
+const CONFLICT_NAME = /\(conflicto de [^()]+\)(\.[^.]*)?$/
+
+const CONFLICT_HINT = 'Otro equipo editó este archivo a la vez. Compara las dos versiones y borra la que sobre.'
+
+function ConflictTag(): ReactElement {
+  return (
+    <span className={styles.conflictTag} title={CONFLICT_HINT}>
+      <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M8 1.5 15 14H1L8 1.5Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinejoin="round"
+        />
+        <path d="M8 6v3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        <circle cx="8" cy="11.8" r="0.9" fill="currentColor" />
+      </svg>
+      Conflicto
+    </span>
+  )
+}
+
 export interface FolderItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className'> {
   name: string
   kind?: 'folder' | 'file'
@@ -13,6 +37,11 @@ export interface FolderItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   status?: string
   badge?: ReactNode
   meta?: string
+  /** List view: modified date cell */
+  dateLabel?: string
+  /** Tooltip for the date (list) or appended to the name tooltip (icons), e.g. «Modificado por PC-Ana · hace 5 min». */
+  dateTitle?: string
+  /** List view: size cell */
   sizeLabel?: string
   /** Visual cue while preparing remote drag */
   dragPreparing?: boolean
@@ -33,6 +62,8 @@ export function FolderItem({
   status,
   badge,
   meta,
+  dateLabel,
+  dateTitle,
   sizeLabel,
   dragPreparing = false,
   dropActive = false,
@@ -48,6 +79,7 @@ export function FolderItem({
   const canDrag = onDragStart != null && draggable !== false && !renaming
   const renameRef = useRef<HTMLInputElement>(null)
   const iconSize = viewMode === 'list' ? 'sm' : 'lg'
+  const conflict = kind === 'file' && CONFLICT_NAME.test(name)
 
   useEffect(() => {
     if (!renaming) return
@@ -93,8 +125,8 @@ export function FolderItem({
           </span>
           {renameField}
           <span className={styles.rowStatus}>{status ?? '—'}</span>
-          <span className={styles.rowMeta}>{meta ?? sizeLabel ?? '—'}</span>
-          <span className={styles.rowBadge} />
+          <span className={styles.rowMeta}>{dateLabel ?? '—'}</span>
+          <span className={styles.rowSize}>{sizeLabel ?? '—'}</span>
         </div>
       )
     }
@@ -109,6 +141,7 @@ export function FolderItem({
           dropActive && styles.dropActive
         )}
         aria-pressed={selected}
+        title={name}
         draggable={canDrag}
         onDragStart={onDragStart}
         {...rest}
@@ -116,10 +149,16 @@ export function FolderItem({
         <span className={styles.rowIcon} aria-hidden="true">
           {glyph}
         </span>
-        <span className={styles.rowName}>{name}</span>
+        <span className={styles.rowName}>
+          <span className={styles.rowNameText}>{name}</span>
+          {conflict ? <ConflictTag /> : null}
+          {badge ? <span className={styles.rowBadge}>{badge}</span> : null}
+        </span>
         <span className={styles.rowStatus}>{status ?? '—'}</span>
-        <span className={styles.rowMeta}>{meta ?? sizeLabel ?? '—'}</span>
-        {badge ? <span className={styles.rowBadge}>{badge}</span> : <span className={styles.rowBadge} />}
+        <span className={styles.rowMeta} title={dateTitle}>
+          {dateLabel ?? '—'}
+        </span>
+        <span className={styles.rowSize}>{sizeLabel ?? '—'}</span>
       </button>
     )
   }
@@ -146,6 +185,7 @@ export function FolderItem({
         dropActive && styles.dropActive
       )}
       aria-pressed={selected}
+      title={dateTitle ? `${name}\n${dateTitle}` : name}
       draggable={canDrag}
       onDragStart={onDragStart}
       {...rest}
@@ -155,6 +195,7 @@ export function FolderItem({
         {badge ? <span className={styles.iconBadge}>{badge}</span> : null}
       </span>
       <span className={styles.iconLabel}>{name}</span>
+      {conflict ? <ConflictTag /> : null}
     </button>
   )
 }

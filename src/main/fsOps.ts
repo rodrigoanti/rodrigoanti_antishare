@@ -2,7 +2,7 @@
  * mkdir / rename / remove inside a share root. All paths go through resolveSafe.
  * Names cannot be empty or contain /, \\ or :. Never mutate the share root itself.
  */
-import { existsSync, mkdirSync, promises as fsp, renameSync, rmSync, statSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, promises as fsp, renameSync, statSync, realpathSync } from 'fs'
 import { basename, dirname, join, relative, sep } from 'path'
 import type {
   FsMkdirRequest,
@@ -13,6 +13,7 @@ import type {
 } from '../shared/types'
 import { copyTree } from './fsCopy'
 import { resolveSafe } from './pathSafe'
+import { moveToTrash } from './trash'
 
 export class FsOpError extends Error {
   constructor(
@@ -239,8 +240,8 @@ export async function moveInShare(
   }
 }
 
-/** Recursively delete a file or folder. Never deletes the share root. */
-export function removeInShare(root: string, relPath: string): void {
+/** Move a file or folder to the Trash (permanent only as fallback). Never the share root. */
+export async function removeInShare(root: string, relPath: string): Promise<void> {
   const rel = posixRel(relPath)
   if (!rel || rel === '.') {
     throw new FsOpError('No se puede eliminar la raíz del share.', 'forbidden')
@@ -255,7 +256,7 @@ export function removeInShare(root: string, relPath: string): void {
   if (isShareRoot(root, abs)) {
     throw new FsOpError('No se puede eliminar la raíz del share.', 'forbidden')
   }
-  rmSync(abs, { recursive: true, force: true })
+  await moveToTrash(abs)
 }
 
 export function mkdirLocal(root: string | null, req: FsMkdirRequest): FsOpResult {
@@ -273,6 +274,6 @@ export async function moveLocal(
   return wrapAsync(() => moveInShare(requireRoot(root), req.path, req.destPath || ''))
 }
 
-export function removeLocal(root: string | null, req: FsRemoveRequest): FsOpResult {
-  return wrap(() => removeInShare(requireRoot(root), req.path))
+export function removeLocal(root: string | null, req: FsRemoveRequest): Promise<FsOpResult> {
+  return wrapAsync(() => removeInShare(requireRoot(root), req.path))
 }

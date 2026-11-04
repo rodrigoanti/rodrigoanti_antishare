@@ -1,5 +1,6 @@
 export { Button } from './Button/Button'
 export { Input } from './Input/Input'
+export { PasswordInput } from './Input/PasswordInput'
 export { SidePanel } from './SidePanel/SidePanel'
 export { Modal } from './Modal/Modal'
 export { Alert } from './Alert/Alert'

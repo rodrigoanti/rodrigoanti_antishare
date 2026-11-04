@@ -209,12 +209,54 @@
 }
 
 .finder-pane {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--color-surface);
+}
+
+/* Single entry point to add files: floating, bottom-right of the explorer. */
+.finder-fab {
+  position: absolute;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--as-blue);
+  color: #fff;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.finder-fab:hover:not(:disabled) {
+  background: var(--as-blue-hover);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+}
+
+.finder-fab:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.finder-fab:focus-visible {
+  outline: 2px solid var(--as-blue);
+  outline-offset: 3px;
+}
+
+.finder-fab:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .finder-toolbar {
@@ -313,6 +355,30 @@
   gap: 2px;
   padding-right: var(--space-2);
   border-right: 1px solid var(--as-gray-200);
+}
+
+.finder-search {
+  display: inline-flex;
+  align-items: center;
+  padding-right: var(--space-2);
+  border-right: 1px solid var(--as-gray-200);
+}
+
+.finder-search > div {
+  width: 168px;
+  height: 30px;
+  padding: 0 8px;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--as-gray-100);
+}
+
+.finder-search input {
+  font-size: 12px;
+}
+
+.finder-search input::-webkit-search-cancel-button {
+  cursor: pointer;
 }
 
 .finder-toolbar-end {
@@ -513,6 +579,37 @@
   color: var(--color-text);
 }
 
+/* Breadcrumb as drop target: same look as a folder's dropActive (FolderItem.module.css). */
+.finder-crumb.drop-active,
+.finder-crumb.drop-active:hover {
+  background: var(--as-blue-soft, color-mix(in srgb, var(--as-blue) 18%, transparent));
+  outline: 2px solid var(--as-blue);
+  outline-offset: -2px;
+  color: var(--color-text);
+}
+
+.finder-crumb.drop-rejected {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.finder-crumb-hint {
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: var(--weight-medium);
+  color: var(--as-blue);
+  pointer-events: none;
+}
+
+.finder-crumb.drop-rejected .finder-crumb-hint {
+  color: var(--color-text-muted);
+}
+
+.finder-crumb.drop-active,
+.finder-crumb.drop-rejected {
+  max-width: none;
+}
+
 .finder-view-toggle {
   display: inline-flex;
   align-items: center;
@@ -553,6 +650,8 @@
   min-height: 0;
   overflow: auto;
   padding: var(--space-3);
+  /* Room so the last row can scroll clear of the floating + button. */
+  padding-bottom: 80px;
 }
 
 .finder-title-row {
@@ -610,7 +709,7 @@
 
 .finder-list-head {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1.6fr) 110px minmax(0, 1fr) 72px;
+  grid-template-columns: 36px minmax(0, 1.6fr) 90px minmax(0, 1fr) 80px;
   gap: 8px;
   align-items: center;
   padding: 6px 10px;
@@ -650,6 +749,11 @@
   color: var(--color-text);
 }
 
+.finder-list-sort-end {
+  justify-self: end;
+  text-align: right;
+}
+
 .finder-empty {
   display: grid;
   place-items: center;
@@ -658,11 +762,26 @@
   text-align: center;
 }
 
+.finder-no-results {
+  min-height: 160px;
+}
+
+.finder-no-results .finder-empty-sub {
+  max-width: none;
+}
+
 .finder-empty-card {
   display: grid;
   justify-items: center;
   gap: var(--space-3);
   max-width: 320px;
+}
+
+.finder-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
 }
 
 .finder-empty-icon {
@@ -751,6 +870,8 @@
   font-weight: var(--weight-medium);
   color: var(--color-text-muted);
   padding: 0 var(--space-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .finder-drop-target {
@@ -1662,6 +1783,10 @@ table.files tbody tr:hover {
   gap: var(--space-5);
 }
 
+.group-panel-conflict {
+  color: var(--color-warning);
+}
+
 .group-panel-section {
   display: grid;
   gap: var(--space-2);
@@ -1702,3 +1827,27 @@ table.files tbody tr:hover {
   }
 }
 
+
+.delete-confirm {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.delete-reach {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.delete-reach svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}

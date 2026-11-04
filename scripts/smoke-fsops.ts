@@ -66,20 +66,20 @@ async function main(): Promise<void> {
     const renTrav = renameLocal(root, { path: '../x', newName: 'y' })
     assert(!renTrav.ok, 'rename traversal debía fallar')
 
-    const rmFile = removeLocal(root, { path: 'readme.txt' })
+    const rmFile = await removeLocal(root, { path: 'readme.txt' })
     assert(rmFile.ok, `remove file: ${rmFile.error}`)
     assert(!existsSync(join(root, 'readme.txt')), 'readme debía borrarse')
 
-    const rmDir = removeLocal(root, { path: 'docs' })
+    const rmDir = await removeLocal(root, { path: 'docs' })
     assert(rmDir.ok, `remove docs: ${rmDir.error}`)
     assert(!existsSync(join(root, 'docs')), 'docs debía borrarse recursivo')
 
-    const rmRoot = removeLocal(root, { path: '' })
+    const rmRoot = await removeLocal(root, { path: '' })
     assert(!rmRoot.ok, 'remove root debía fallar')
     assert(existsSync(root), 'el share root no debe borrarse')
-    const rmDot = removeLocal(root, { path: '.' })
+    const rmDot = await removeLocal(root, { path: '.' })
     assert(!rmDot.ok, 'remove . debía fallar')
-    const rmTrav = removeLocal(root, { path: '../outside' })
+    const rmTrav = await removeLocal(root, { path: '../outside' })
     assert(!rmTrav.ok, 'remove traversal debía fallar')
 
     console.log('local mkdir/rename/remove + rejects OK')

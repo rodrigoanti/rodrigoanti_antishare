@@ -1,4 +1,4 @@
-export type ToastVariant = 'success' | 'error' | 'warning'
+export type ToastVariant = 'success' | 'error' | 'warning' | 'info'
 
 export interface ToastAction {
   label: string
@@ -7,7 +7,7 @@ export interface ToastAction {
 
 export interface ToastShowOptions {
   action?: ToastAction
-  /** Auto-dismiss ms. Default 4500. Pass 0 to keep until dismissed. */
+  /** Auto-dismiss ms. Default 4500 (8000 with an action). Pass 0 to keep until dismissed. */
   duration?: number
 }
 
@@ -22,6 +22,7 @@ export interface ToastItem {
 type Listener = (items: ToastItem[]) => void
 
 const DEFAULT_DURATION = 4500
+const ACTION_DURATION = 8000
 const listeners = new Set<Listener>()
 let items: ToastItem[] = []
 let seq = 0
@@ -35,7 +36,7 @@ function push(variant: ToastVariant, message: string, opts?: ToastShowOptions): 
   const text = message.trim()
   if (!text) return ''
   const id = `toast-${Date.now()}-${++seq}`
-  const duration = opts?.duration ?? DEFAULT_DURATION
+  const duration = opts?.duration ?? (opts?.action ? ACTION_DURATION : DEFAULT_DURATION)
   items = [...items, { id, variant, message: text, action: opts?.action, duration }]
   emit()
   return id
@@ -52,6 +53,7 @@ export const toast = {
   success: (message: string, opts?: ToastShowOptions): string => push('success', message, opts),
   error: (message: string, opts?: ToastShowOptions): string => push('error', message, opts),
   warning: (message: string, opts?: ToastShowOptions): string => push('warning', message, opts),
+  info: (message: string, opts?: ToastShowOptions): string => push('info', message, opts),
   dismiss
 }
 

@@ -12,6 +12,10 @@ function createStub(): AntishareApi {
       console.warn(stubError('selectFolder'))
       return null
     },
+    selectFiles: async () => {
+      console.warn(stubError('selectFiles'))
+      return []
+    },
     listLocal: fail('listLocal'),
     diagnoseNetwork: async () => ({ checks: [], summaryEs: stubError('diagnoseNetwork') }),
     listGroups: async () => ({
@@ -33,6 +37,7 @@ function createStub(): AntishareApi {
     moveLocal: fail('moveLocal'),
     removeLocal: fail('removeLocal'),
     openFile: fail('openFile'),
+    revealFile: fail('revealFile'),
     showItemInFolder: fail('showItemInFolder')
   }
 }

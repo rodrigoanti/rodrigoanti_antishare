@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
-import { existsSync, realpathSync, statSync } from 'fs'
-import { join, relative, isAbsolute } from 'path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'fs'
+import { dirname, join, relative, isAbsolute } from 'path'
 import type {
   AnnouncedGroup,
   DiscoveredGroup,
@@ -15,6 +15,7 @@ import type {
 } from '../shared/types'
 import { deriveGroupKey, newGroupId, signGroupRequest, verifyGroupRequest } from './groupAuth'
 import type { GroupServerHooks } from './groupServer'
+import type { AuthorLookup } from './listFolder'
 import { GroupStore, isNewerMeta, type GroupRecord } from './groupStore'
 import { peerHttp } from './peerHttp'
 import { SyncEngine } from './syncEngine'
@@ -22,6 +23,7 @@ import { SyncEngine } from './syncEngine'
 const MIN_PASSWORD = 4
 const MAX_NAME = 60
 const JOIN_TIMEOUT_MS = 6_000
+const SELF_LABEL = 'este equipo'
 
 export interface GroupManagerOptions {
   /** Directory for groups.json and sync indexes (userData in the app). */
@@ -69,9 +71,54 @@ function fail(err: unknown): GroupOpResult {
 export class GroupManager {
   private readonly store: GroupStore
   private readonly engines = new Map<string, SyncEngine>()
+  /** deviceId → last known name, kept on disk so offline members still show up. */
+  private readonly deviceNames = new Map<string, string>()
 
   constructor(private readonly opts: GroupManagerOptions) {
     this.store = new GroupStore(join(opts.dataDir, 'groups.json'))
+    this.loadDeviceNames()
+  }
+
+  private get deviceNamesFile(): string {
+    return join(this.opts.dataDir, 'device-names.json')
+  }
+
+  private loadDeviceNames(): void {
+    if (!existsSync(this.deviceNamesFile)) return
+    try {
+      const raw = JSON.parse(readFileSync(this.deviceNamesFile, 'utf8')) as Record<string, unknown>
+      for (const [id, name] of Object.entries(raw)) {
+        if (typeof name === 'string' && name) this.deviceNames.set(id, name)
+      }
+    } catch (err) {
+      console.error('[groups] device names load failed', err instanceof Error ? err.message : err)
+    }
+  }
+
+  private rememberDevice(deviceId: string, name: string): void {
+    const clean = name.trim().slice(0, MAX_NAME)
+    if (!deviceId || !clean || deviceId === this.opts.deviceId) return
+    if (this.deviceNames.get(deviceId) === clean) return
+    this.deviceNames.set(deviceId, clean)
+    try {
+      mkdirSync(dirname(this.deviceNamesFile), { recursive: true })
+      const tmp = `${this.deviceNamesFile}.tmp`
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.deviceNames)), 'utf8')
+      renameSync(tmp, this.deviceNamesFile)
+    } catch (err) {
+      console.error('[groups] device names save failed', err instanceof Error ? err.message : err)
+    }
+  }
+
+  /** Who last changed each file of a group, from its sync index; unknown devices stay blank. */
+  authorLookup(id: string | undefined): AuthorLookup | undefined {
+    const engine = id ? this.engines.get(id) : undefined
+    if (!engine) return undefined
+    return (path) => {
+      const by = engine.modifiedBy(path)
+      if (!by) return undefined
+      return by === this.opts.deviceId ? SELF_LABEL : this.deviceNames.get(by)
+    }
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────
@@ -108,7 +155,8 @@ export class GroupManager {
       deviceName: this.opts.deviceName,
       listPeers: () => this.syncPeers(g.id),
       sign: (method, path) => this.sign(g.id, method, path),
-      onPeerMeta: (meta) => this.mergeMeta(meta)
+      onPeerMeta: (meta) => this.mergeMeta(meta),
+      onPeerName: (deviceId, name) => this.rememberDevice(deviceId, name)
     })
     this.engines.set(g.id, engine)
     engine.start()

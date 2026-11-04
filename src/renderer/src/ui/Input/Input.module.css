@@ -70,3 +70,39 @@
   color: var(--color-text-subtle);
   font-size: var(--text-sm);
 }
+
+.revealButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -2px -4px -2px 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-subtle);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.revealButton:hover:not(:disabled) {
+  background: var(--color-bg-muted, color-mix(in srgb, var(--color-text) 8%, transparent));
+  color: var(--color-text);
+}
+
+.revealButton[aria-pressed='true'] {
+  color: var(--color-primary);
+}
+
+.revealButton:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.revealButton:disabled {
+  cursor: default;
+}

@@ -133,9 +133,12 @@ export async function importLocalPaths(
 
   let imported = 0
   let completedBytes = 0
+  const names: string[] = []
+  const renamed: { from: string; to: string }[] = []
   for (let i = 0; i < checkedSources.length; i++) {
     const abs = checkedSources[i]
-    const name = uniqueNameInDir(destDir, basename(abs))
+    const original = basename(abs)
+    const name = uniqueNameInDir(destDir, original)
     const destAbs = join(destDir, name)
     try {
       resolveSafe(shareRoot, relative(shareReal, destAbs) || name)
@@ -154,17 +157,21 @@ export async function importLocalPaths(
       completedBytes += sourceSizes[i] ?? treeProgress.bytes
       onProgress?.(completedBytes, totalBytes)
       imported++
+      names.push(name)
+      if (name !== original) renamed.push({ from: original, to: name })
       // Yield between top-level sources so concurrent IPC can run.
       await yieldToEventLoop()
     } catch (e) {
       return {
         ok: false,
         imported,
+        names,
+        renamed,
         error: e instanceof Error ? e.message : `No se pudo copiar ${abs}.`
       }
     }
   }
-  return { ok: true, imported }
+  return { ok: true, imported, names, renamed }
 }
 
 /** Copy absolute paths into an arbitrary absolute directory (e.g. user-chosen export folder). */

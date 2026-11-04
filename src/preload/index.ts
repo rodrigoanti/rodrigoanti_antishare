@@ -17,6 +17,7 @@ const api: AntishareApi = {
     }
   },
   selectFolder: () => ipcRenderer.invoke('share:selectFolder'),
+  selectFiles: () => ipcRenderer.invoke('share:selectFiles'),
   listLocal: (req) => ipcRenderer.invoke('share:listLocal', req),
   diagnoseNetwork: () => ipcRenderer.invoke('network:diagnose'),
   listGroups: () => ipcRenderer.invoke('groups:list'),
@@ -33,6 +34,7 @@ const api: AntishareApi = {
   moveLocal: (req) => ipcRenderer.invoke('files:move', req),
   removeLocal: (req) => ipcRenderer.invoke('files:remove', req),
   openFile: (req) => ipcRenderer.invoke('files:open', req),
+  revealFile: (req) => ipcRenderer.invoke('files:reveal', req),
   showItemInFolder: (filePath) => ipcRenderer.invoke('shell:showItemInFolder', filePath)
 }
 

@@ -9,7 +9,6 @@ import {
   rmdirSync,
   rmSync,
   statSync,
-  unlinkSync,
   watch,
   type FSWatcher
 } from 'fs'
@@ -24,6 +23,7 @@ import type {
   SyncStatus
 } from '../shared/types'
 import { resolveSafe } from './pathSafe'
+import { moveToTrash } from './trash'
 import { peerHttp } from './peerHttp'
 import {
   SETTLE_MS,
@@ -56,6 +56,8 @@ export interface SyncEngineOptions {
   sign: (method: string, pathAndQuery: string) => Record<string, string>
   /** Group settings seen on a peer (name, deletion). */
   onPeerMeta?: (meta: GroupMetaResponse) => void
+  /** deviceId → name pair learned from a peer's index. */
+  onPeerName?: (deviceId: string, name: string) => void
 }
 
 function isValidSyncPath(path: unknown): path is string {
@@ -161,6 +163,12 @@ export class SyncEngine {
       deviceName: this.opts.deviceName,
       entries: this.index.publicEntries()
     }
+  }
+
+  /** Device id that produced the indexed version of `path`, if the file is indexed. */
+  modifiedBy(path: string): string | undefined {
+    const e = this.index.entries.get(path)
+    return e && !e.deleted ? e.modifiedBy : undefined
   }
 
   /** A member says it has changes: pull soon instead of waiting for the timer. */
@@ -269,6 +277,9 @@ export class SyncEngine {
         const body = (await res.json()) as SyncIndexResponse
         if (body.groupId !== this.opts.groupId || body.deviceId === this.opts.deviceId) return null
         if (!Array.isArray(body.entries)) return null
+        if (typeof body.deviceId === 'string' && typeof body.deviceName === 'string') {
+          this.opts.onPeerName?.(body.deviceId, body.deviceName)
+        }
         return { base, index: body }
       } catch {
         /* try next host */
@@ -339,7 +350,7 @@ export class SyncEngine {
 
       if (order === 'greater') {
         if (r.deleted) {
-          if (this.removeLocal(abs, l)) {
+          if (await this.removeLocal(abs, l)) {
             this.index.entries.set(r.path, { ...r, mtime: 0 })
             applied++
           }
@@ -435,11 +446,12 @@ export class SyncEngine {
     }
   }
 
-  private removeLocal(abs: string, l: LocalEntry): boolean {
+  /** Remote deletes go to this device's Trash too, so every member can restore. */
+  private async removeLocal(abs: string, l: LocalEntry): Promise<boolean> {
     if (!existsSync(abs)) return true
     if (!this.localMatches(abs, l)) return false
     try {
-      unlinkSync(abs)
+      await moveToTrash(abs)
     } catch {
       return false
     }
